@@ -1,0 +1,38 @@
+[project]
+name = "slack-cached"
+version = "0.1.0"
+description = "Cache Slack threads to a local SQLite database."
+readme = "README.md"
+authors = [
+    { name = "Tom Rochette", email = "tom.rochette@shopify.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    "structlog>=24.4",
+]
+
+[project.scripts]
+slack-cached = "slack_cached.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.30,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
