@@ -107,3 +107,7 @@ uv run pytest
 uv run ruff check
 uv run ruff format --check
 ```
+
+## Related projects
+
+- [slacrawl](https://github.com/openclaw/slacrawl)
