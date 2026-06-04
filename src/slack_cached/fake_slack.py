@@ -8,10 +8,15 @@ Exposes Slack Web API endpoints under ``/api/``:
 
     GET /api/conversations.list
     GET /api/conversations.replies
+    GET /api/conversations.history
     GET /api/users.list
 
 All data is deterministically generated from a seed so the same seed always
 produces the same workspace.  Cursor-based pagination is fully supported.
+
+Pass ``--rate-limits`` to enable per-endpoint rate limiting that mirrors
+Slack's documented tiers (disabled by default).  Rate-limited requests
+receive HTTP 429 with a ``Retry-After`` header.
 
 Configuration parameters (``WorkspaceParams`` / CLI flags):
 
@@ -25,6 +30,8 @@ Configuration parameters (``WorkspaceParams`` / CLI flags):
         Message count per thread (default 3-12).
     --activity-ratio R
         Fraction of users who actively participate (default 0.6).
+    --rate-limits
+        Enable Slack-compatible rate limiting (disabled by default).
 """
 
 from __future__ import annotations
@@ -34,7 +41,10 @@ import base64
 import json
 import random
 import sys
-from collections.abc import Sequence
+import threading
+import time
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -46,6 +56,67 @@ log = structlog.get_logger(__name__)
 
 TEAM_ID = "T01FAKEWK"
 EPOCH_BASE = 1704067200.0
+
+ENDPOINT_RATE_LIMITS: dict[str, int] = {
+    "conversations.replies": 50,
+    "conversations.history": 50,
+    "users.list": 20,
+    "conversations.list": 20,
+}
+
+RATE_LIMIT_WINDOW = 60.0
+
+
+class RateLimiter:
+    """Thread-safe sliding-window rate limiter per API endpoint.
+
+    Uses Slack's documented tier limits.  Only successful (non-429) requests
+    count against the window so that retries after a ``Retry-After`` sleep
+    don't cascade.
+    """
+
+    def __init__(
+        self,
+        limits: dict[str, int] | None = None,
+        window: float = RATE_LIMIT_WINDOW,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        self._limits = limits if limits is not None else dict(ENDPOINT_RATE_LIMITS)
+        self._window = window
+        self._now = now or time.time
+        self._request_times: dict[str, list[float]] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    def check(self, path: str) -> tuple[bool, int]:
+        """Check whether *path* is within its rate limit.
+
+        Returns ``(allowed, retry_after)``.  When *allowed* is ``False``,
+        *retry_after* is the number of seconds the client should wait.
+        """
+        endpoint = self._endpoint_for_path(path)
+        if endpoint is None:
+            return True, 0
+
+        limit = self._limits[endpoint]
+        now = self._now()
+
+        with self._lock:
+            times = [t for t in self._request_times[endpoint] if now - t < self._window]
+            self._request_times[endpoint] = times
+
+            if len(times) >= limit:
+                oldest = min(times)
+                retry_after = max(1, int(self._window - (now - oldest)))
+                return False, retry_after
+
+            self._request_times[endpoint].append(now)
+            return True, 0
+
+    def _endpoint_for_path(self, path: str) -> str | None:
+        for endpoint in self._limits:
+            if endpoint in path:
+                return endpoint
+        return None
 
 
 def _encode_cursor(offset: int) -> str:
@@ -74,6 +145,7 @@ class WorkspaceParams:
     min_messages_per_thread: int = 3
     max_messages_per_thread: int = 12
     activity_ratio: float = 0.6
+    rate_limits: bool = False
 
 
 def _parse_range_flag(raw: str) -> tuple[int, int]:
@@ -1240,11 +1312,22 @@ class Workspace:
 
 class FakeSlackHandler(BaseHTTPRequestHandler):
     workspace: Workspace
+    rate_limiter: RateLimiter | None = None
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+        if self.rate_limiter is not None:
+            allowed, retry_after = self.rate_limiter.check(path)
+            if not allowed:
+                self._send_json(
+                    {"ok": False, "error": "ratelimited"},
+                    429,
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
+                return
 
         routes = {
             "/api/conversations.replies": self._handle_conversations_replies,
@@ -1340,11 +1423,18 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
 
         self._send_json(response)
 
-    def _send_json(self, data: dict[str, Any], status: int = 200) -> None:
+    def _send_json(
+        self,
+        data: dict[str, Any],
+        status: int = 200,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1364,6 +1454,7 @@ def run_server(
 ) -> HTTPServer:
     workspace = Workspace(params=params)
     FakeSlackHandler.workspace = workspace
+    FakeSlackHandler.rate_limiter = RateLimiter() if workspace.params.rate_limits else None
     server = HTTPServer((host, port), FakeSlackHandler)
     log.info(
         "fake_slack_server_starting",
@@ -1373,6 +1464,7 @@ def run_server(
         users=len(workspace.users),
         channels=len(workspace.channels),
         threads=len(workspace.threads),
+        rate_limits=workspace.params.rate_limits,
     )
     return server
 
@@ -1413,6 +1505,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=0.6,
         help="Fraction of users who actively participate (default: 0.6).",
     )
+    parser.add_argument(
+        "--rate-limits",
+        action="store_true",
+        default=False,
+        help="Enable Slack-compatible rate limiting (disabled by default).",
+    )
 
     args = parser.parse_args(argv)
     min_mpt, max_mpt = _parse_range_flag(args.messages_per_thread)
@@ -1425,6 +1523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_messages_per_thread=min_mpt,
         max_messages_per_thread=max_mpt,
         activity_ratio=args.activity_ratio,
+        rate_limits=args.rate_limits,
     )
 
     structlog.configure(

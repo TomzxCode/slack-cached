@@ -581,3 +581,122 @@ class TestFetchChannelMessagesIntegration:
             assert cached[0].ts == thread_ts
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiter:
+    def test_default_disabled(self) -> None:
+        from slack_cached.fake_slack import RateLimiter
+
+        limiter = RateLimiter(limits={"/api/test": 2})
+        allowed, _ = limiter.check("/api/test")
+        assert allowed is True
+
+    def test_returns_false_when_exceeded(self) -> None:
+        from slack_cached.fake_slack import RateLimiter
+
+        limiter = RateLimiter(limits={"/api/test": 2}, now=lambda: 0.0)
+        limiter.check("/api/test")
+        limiter.check("/api/test")
+        allowed, retry_after = limiter.check("/api/test")
+        assert allowed is False
+        assert retry_after >= 1
+
+    def test_unknown_path_always_allowed(self) -> None:
+        from slack_cached.fake_slack import RateLimiter
+
+        limiter = RateLimiter(limits={"/api/test": 1}, now=lambda: 0.0)
+        limiter.check("/api/test")
+        for _ in range(20):
+            allowed, _ = limiter.check("/api/other")
+            assert allowed is True
+
+    def test_per_endpoint_independent(self) -> None:
+        from slack_cached.fake_slack import RateLimiter
+
+        limiter = RateLimiter(
+            limits={"/api/a": 1, "/api/b": 1},
+            now=lambda: 0.0,
+        )
+        limiter.check("/api/a")
+        allowed_a, _ = limiter.check("/api/a")
+        allowed_b, _ = limiter.check("/api/b")
+        assert allowed_a is False
+        assert allowed_b is True
+
+    def test_succeeds_after_window_expires(self) -> None:
+        from slack_cached.fake_slack import RateLimiter
+
+        clock = [0.0]
+        limiter = RateLimiter(limits={"/api/test": 1}, now=lambda: clock[0])
+        limiter.check("/api/test")
+        allowed, retry_after = limiter.check("/api/test")
+        assert allowed is False
+        clock[0] += retry_after
+        allowed, _ = limiter.check("/api/test")
+        assert allowed is True
+
+    def test_real_slack_tiers(self) -> None:
+        from slack_cached.fake_slack import ENDPOINT_RATE_LIMITS
+
+        assert ENDPOINT_RATE_LIMITS["conversations.replies"] == 50
+        assert ENDPOINT_RATE_LIMITS["users.list"] == 20
+        assert ENDPOINT_RATE_LIMITS["conversations.list"] == 20
+
+
+@pytest.fixture(scope="module")
+def rate_limited_server():
+    from http.server import HTTPServer
+
+    from slack_cached.fake_slack import FakeSlackHandler, RateLimiter, Workspace
+
+    workspace = Workspace(seed=42)
+    FakeSlackHandler.workspace = workspace
+    FakeSlackHandler.rate_limiter = RateLimiter()
+    server = HTTPServer(("127.0.0.1", 0), FakeSlackHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+    yield f"http://127.0.0.1:{port}"
+    server.shutdown()
+    FakeSlackHandler.rate_limiter = None
+
+
+class TestRateLimitedServer:
+    def test_normal_requests_succeed(self, rate_limited_server: str) -> None:
+        resp = requests.get(
+            f"{rate_limited_server}/api/users.list",
+            params={"limit": "5"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_returns_429_when_limit_exceeded(self, rate_limited_server: str) -> None:
+        url = f"{rate_limited_server}/api/users.list"
+        for _ in range(20):
+            requests.get(url, params={"limit": "1"}, timeout=5)
+        resp = requests.get(url, params={"limit": "1"}, timeout=5)
+        assert resp.status_code == 429
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["error"] == "ratelimited"
+        assert "Retry-After" in resp.headers
+        assert int(resp.headers["Retry-After"]) >= 1
+
+    def test_rate_limit_is_per_endpoint(self, rate_limited_server: str) -> None:
+        for _ in range(20):
+            requests.get(f"{rate_limited_server}/api/users.list", params={"limit": "1"}, timeout=5)
+        resp_users = requests.get(
+            f"{rate_limited_server}/api/users.list", params={"limit": "1"}, timeout=5
+        )
+        assert resp_users.status_code == 429
+        resp_channels = requests.get(
+            f"{rate_limited_server}/api/conversations.list", params={"limit": "1"}, timeout=5
+        )
+        assert resp_channels.status_code == 200
