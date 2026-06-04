@@ -461,6 +461,15 @@ def count_channels(conn: sqlite3.Connection) -> int:
     return int(row["n"]) if row else 0
 
 
+def count_channel_messages(conn: sqlite3.Connection, channel: str) -> int:
+    """Return the number of cached messages for a channel (across all threads)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM messages WHERE channel = ?",
+        (channel,),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
 def _bool_to_int(value: Any) -> int | None:
     """Map a Slack boolean-ish value to 0/1, preserving None."""
     if value is None:

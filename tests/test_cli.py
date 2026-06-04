@@ -270,3 +270,78 @@ def test_show_users_no_fetch_empty(tmp_path: Path, capsys: pytest.CaptureFixture
     rc = cli.main(["show-users", "--db", str(db_path), "--no-fetch"])
     assert rc == 0
     assert "0 user(s)" in capsys.readouterr().out
+
+
+class FakeChannelClient:
+    """Stub client for channel message fetching."""
+
+    def __init__(self, messages=None, thread_replies=None):
+        self._messages = messages or []
+        self._thread_replies = thread_replies or {}
+
+    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+        yield from self._messages
+
+    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        yield from self._thread_replies.get(thread_ts, [])
+
+
+def test_fetch_channel_messages_basic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch-channel-messages", "--channel", "C1", "--db", str(db_path)])
+    assert rc == 0
+
+
+def test_fetch_channel_messages_requires_channel(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    with pytest.raises(SystemExit):
+        cli.main(["fetch-channel-messages", "--db", str(db_path)])
+
+
+def test_fetch_channel_messages_full_threads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {
+                "ts": "1700000000.000100",
+                "user": "U1",
+                "text": "parent",
+                "thread_ts": "1700000000.000100",
+                "reply_count": 1,
+                "latest_reply": "1700000000.000200",
+            },
+        ],
+        thread_replies={
+            "1700000000.000100": [
+                {
+                    "ts": "1700000000.000100",
+                    "user": "U1",
+                    "text": "parent",
+                    "thread_ts": "1700000000.000100",
+                },
+                {"ts": "1700000000.000200", "user": "U2", "text": "reply"},
+            ],
+        },
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(
+        [
+            "fetch-channel-messages",
+            "--channel",
+            "C1",
+            "--full-threads",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0

@@ -1191,6 +1191,47 @@ class Workspace:
     def thread_exists(self, channel: str, thread_ts: str) -> bool:
         return (channel, thread_ts) in self.threads
 
+    def get_channel_history(
+        self,
+        channel: str,
+        oldest: str | None,
+        latest: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], bool, str | None]:
+        """Return top-level messages (thread roots) for a channel.
+
+        Each thread's first message is returned, simulating what
+        conversations.history returns (standalone messages and thread parents).
+        """
+        roots: list[dict[str, Any]] = []
+        for (ch_id, _ts), messages in self.threads.items():
+            if ch_id != channel or not messages:
+                continue
+            root = dict(messages[0])
+            reply_count = len(messages) - 1
+            root["reply_count"] = reply_count
+            if reply_count > 0:
+                root["reply_users"] = list({m["user"] for m in messages[1:] if m.get("user")})
+                root["latest_reply"] = messages[-1]["ts"]
+            roots.append(root)
+
+        roots.sort(key=lambda m: float(m["ts"]))
+
+        if oldest is not None:
+            oldest_f = float(oldest)
+            roots = [m for m in roots if float(m["ts"]) >= oldest_f]
+        if latest is not None:
+            latest_f = float(latest)
+            roots = [m for m in roots if float(m["ts"]) <= latest_f]
+
+        offset = _decode_cursor(cursor)
+        page = roots[offset : offset + limit]
+        next_offset = offset + limit
+        has_more = next_offset < len(roots)
+        next_cursor = _encode_cursor(next_offset) if has_more else None
+        return page, has_more, next_cursor
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler
@@ -1207,6 +1248,7 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
 
         routes = {
             "/api/conversations.replies": self._handle_conversations_replies,
+            "/api/conversations.history": self._handle_conversations_history,
             "/api/users.list": self._handle_users_list,
             "/api/conversations.list": self._handle_conversations_list,
         }
@@ -1230,6 +1272,28 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
 
         messages, has_more, next_cursor = self.workspace.get_thread_messages(
             channel, thread_ts, oldest, cursor, limit
+        )
+        response: dict[str, Any] = {
+            "ok": True,
+            "messages": messages,
+            "has_more": has_more,
+        }
+        if next_cursor is not None:
+            response["response_metadata"] = {"next_cursor": next_cursor}
+        else:
+            response["response_metadata"] = {"next_cursor": ""}
+
+        self._send_json(response)
+
+    def _handle_conversations_history(self, params: dict[str, str]) -> None:
+        channel = params.get("channel", "")
+        limit = int(params.get("limit", "200"))
+        oldest = params.get("oldest")
+        latest = params.get("latest")
+        cursor = params.get("cursor")
+
+        messages, has_more, next_cursor = self.workspace.get_channel_history(
+            channel, oldest, latest, cursor, limit
         )
         response: dict[str, Any] = {
             "ok": True,

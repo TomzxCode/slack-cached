@@ -141,6 +141,41 @@ class SlackClient:
             if not cursor:
                 return
 
+    def iter_channel_history(
+        self,
+        channel: str,
+        oldest: str | None = None,
+        latest: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield top-level messages in a channel via conversations.history.
+
+        This returns standalone messages and thread parents, but not thread
+        replies. Use iter_thread_replies to fetch the full thread.
+        """
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "channel": channel,
+                "limit": limit,
+                "inclusive": "true",
+            }
+            if oldest:
+                params["oldest"] = oldest
+            if latest:
+                params["latest"] = latest
+            if cursor:
+                params["cursor"] = cursor
+
+            data = self._get(f"{self._base_url}/conversations.history", params)
+            yield from data.get("messages", [])
+
+            if not data.get("has_more"):
+                return
+            cursor = (data.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                return
+
     def _iter_cursor(
         self,
         url: str,

@@ -18,6 +18,7 @@ import structlog
 from .slack_api import SlackClient
 from .storage import (
     CachedMessage,
+    count_channel_messages,
     count_channels,
     count_messages,
     count_users,
@@ -57,6 +58,16 @@ class ListFetchResult:
     processed: int
     added: int
     total: int
+
+
+@dataclass(frozen=True)
+class ChannelFetchResult:
+    """Summary of what `fetch_channel_messages` did."""
+
+    channel: str
+    fetched_messages: int
+    total_messages: int
+    threads_with_replies_fetched: int
 
 
 def fetch_thread(
@@ -122,6 +133,75 @@ def fetch_thread(
 def load_thread(conn: sqlite3.Connection, ref: ThreadRef) -> list[CachedMessage]:
     """Return the cached messages for a thread, ordered by ts."""
     return load_thread_messages(conn, ref.channel, ref.thread_ts)
+
+
+def fetch_channel_messages(
+    conn: sqlite3.Connection,
+    client: SlackClient,
+    channel: str,
+    full_threads: bool = False,
+) -> ChannelFetchResult:
+    """Fetch messages from a channel.
+
+    By default only top-level messages are fetched via conversations.history
+    (standalone messages and thread parents, but not thread replies).  When
+    *full_threads* is True, every thread that has replies is also fetched in
+    full via conversations.replies.
+    """
+    log.info("fetch_channel_messages_start", channel=channel, full_threads=full_threads)
+
+    history: list[dict[str, Any]] = list(client.iter_channel_history(channel=channel))
+    log.info("fetch_channel_history_done", channel=channel, count=len(history))
+
+    written = 0
+    threads_with_replies_fetched = 0
+
+    with transaction(conn):
+        for msg in history:
+            thread_ts = msg.get("thread_ts") or msg["ts"]
+            record_thread_refresh(conn, channel, thread_ts, None)
+            written += upsert_messages(conn, channel, thread_ts, [msg])
+
+    if full_threads:
+        parent_tss = sorted(
+            {
+                msg.get("thread_ts") or msg["ts"]
+                for msg in history
+                if msg.get("reply_count", 0) > 0 or msg.get("latest_reply")
+            }
+        )
+        log.info("fetch_channel_threads_start", channel=channel, thread_count=len(parent_tss))
+
+        for thread_ts in parent_tss:
+            replies = list(client.iter_thread_replies(channel=channel, thread_ts=thread_ts))
+            if not replies:
+                continue
+            latest = _latest_ts(replies)
+            with transaction(conn):
+                record_thread_refresh(conn, channel, thread_ts, latest)
+                written += upsert_messages(conn, channel, thread_ts, replies)
+            threads_with_replies_fetched += 1
+
+        log.info(
+            "fetch_channel_threads_done",
+            channel=channel,
+            threads_fetched=threads_with_replies_fetched,
+        )
+
+    total = count_channel_messages(conn, channel)
+    log.info(
+        "fetch_channel_messages_done",
+        channel=channel,
+        written=written,
+        total=total,
+        threads_with_replies_fetched=threads_with_replies_fetched,
+    )
+    return ChannelFetchResult(
+        channel=channel,
+        fetched_messages=written,
+        total_messages=total,
+        threads_with_replies_fetched=threads_with_replies_fetched,
+    )
 
 
 def fetch_users(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResult:

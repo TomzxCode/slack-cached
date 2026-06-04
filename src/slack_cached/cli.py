@@ -288,6 +288,26 @@ def cmd_fetch_channels(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch_channel_messages(args: argparse.Namespace) -> int:
+    """Fetch messages from a channel."""
+    from .cache import fetch_channel_messages
+
+    client = _build_client(args)
+    with _open_db(args) as conn:
+        result = fetch_channel_messages(conn, client, args.channel, full_threads=args.full_threads)
+    detail = (
+        f", {result.threads_with_replies_fetched} threads with replies fetched"
+        if args.full_threads
+        else ""
+    )
+    print(
+        f"cached {result.total_messages} messages for {result.channel} "
+        f"({result.fetched_messages} fetched{detail})",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _render_users_human(users: list[CachedUser]) -> str:
     lines = [f"{len(users)} user(s)", ""]
     for user in users:
@@ -379,6 +399,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_db_args(fetch_channels_cmd)
     fetch_channels_cmd.set_defaults(func=cmd_fetch_channels)
+
+    fetch_channel_messages_cmd = sub.add_parser(
+        "fetch-channel-messages",
+        help="Fetch messages from a channel (top-level by default).",
+    )
+    fetch_channel_messages_cmd.add_argument(
+        "--channel",
+        required=True,
+        help="Slack channel id (e.g. C0123ABCDEF).",
+    )
+    fetch_channel_messages_cmd.add_argument(
+        "--full-threads",
+        action="store_true",
+        help="Also fetch all replies for every thread in the channel.",
+    )
+    _add_db_args(fetch_channel_messages_cmd)
+    fetch_channel_messages_cmd.set_defaults(func=cmd_fetch_channel_messages)
 
     show_users_cmd = sub.add_parser(
         "show-users",

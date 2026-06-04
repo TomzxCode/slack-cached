@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -384,3 +385,199 @@ class TestParameterCombinations:
         ws = Workspace(params=params)
         for messages in ws.threads.values():
             assert len(messages) >= 4
+
+
+# ---------------------------------------------------------------------------
+# Conversations history endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestConversationsHistory:
+    def _first_channel_with_threads(self, fake_server: str) -> str:
+        ws = Workspace(seed=42)
+        channel_ids = {ch_id for ch_id, _ in ws.threads}
+        return next(iter(channel_ids))
+
+    def test_returns_top_level_messages(self, fake_server: str) -> None:
+        channel = self._first_channel_with_threads(fake_server)
+        data = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel},
+        )
+        assert data["ok"] is True
+        assert len(data["messages"]) > 0
+
+    def test_each_message_is_thread_root(self, fake_server: str) -> None:
+        channel = self._first_channel_with_threads(fake_server)
+        data = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel},
+        )
+        for msg in data["messages"]:
+            assert "ts" in msg
+            assert "thread_ts" in msg
+            assert msg["ts"] == msg["thread_ts"]
+
+    def test_reply_count_matches_thread(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        channel = self._first_channel_with_threads(fake_server)
+        data = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel},
+        )
+        for msg in data["messages"]:
+            thread_key = (channel, msg["thread_ts"])
+            full_thread = ws.threads.get(thread_key, [])
+            expected_replies = len(full_thread) - 1
+            assert msg["reply_count"] == expected_replies
+
+    def test_message_count_matches_thread_count(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        channel = self._first_channel_with_threads(fake_server)
+        expected_count = sum(1 for ch_id, _ in ws.threads if ch_id == channel)
+        all_messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(20):
+            params: dict[str, str] = {"channel": channel, "limit": "5"}
+            if cursor:
+                params["cursor"] = cursor
+            data = _get(fake_server, "/api/conversations.history", params)
+            all_messages.extend(data["messages"])
+            next_cursor = data["response_metadata"]["next_cursor"]
+            if not next_cursor:
+                break
+            cursor = next_cursor
+        assert len(all_messages) == expected_count
+
+    def test_pagination(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        channel = self._first_channel_with_threads(fake_server)
+        total_in_channel = sum(1 for ch_id, _ in ws.threads if ch_id == channel)
+        if total_in_channel < 3:
+            pytest.skip("need at least 3 threads in channel")
+
+        page1 = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel, "limit": "2"},
+        )
+        assert len(page1["messages"]) == 2
+        assert page1["has_more"] is True
+
+        cursor = page1["response_metadata"]["next_cursor"]
+        page2 = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel, "limit": "2", "cursor": cursor},
+        )
+        assert len(page2["messages"]) >= 1
+        assert page2["messages"][0]["ts"] != page1["messages"][0]["ts"]
+
+    def test_empty_channel_returns_empty(self, fake_server: str) -> None:
+        data = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": "C9999"},
+        )
+        assert data["ok"] is True
+        assert data["messages"] == []
+
+    def test_messages_sorted_chronologically(self, fake_server: str) -> None:
+        channel = self._first_channel_with_threads(fake_server)
+        data = _get(
+            fake_server,
+            "/api/conversations.history",
+            {"channel": channel},
+        )
+        timestamps = [float(m["ts"]) for m in data["messages"]]
+        assert timestamps == sorted(timestamps)
+
+
+# ---------------------------------------------------------------------------
+# Integration: fetch_channel_messages against fake server
+# ---------------------------------------------------------------------------
+
+
+class TestFetchChannelMessagesIntegration:
+    @pytest.fixture()
+    def workspace(self) -> Workspace:
+        return Workspace(seed=42)
+
+    def test_fetch_top_level_only(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        from slack_cached.cache import fetch_channel_messages
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect
+
+        channel = next(ch_id for ch_id, _ in workspace.threads)
+        expected_threads = sum(1 for ch_id, _ in workspace.threads if ch_id == channel)
+
+        client = SlackClient(
+            Credentials(token="xoxb-fake", cookie=None),
+            base_url=f"{fake_server}/api",
+        )
+        conn = connect(tmp_path / "cache.db")
+        try:
+            result = fetch_channel_messages(conn, client, channel)
+            assert result.fetched_messages == expected_threads
+            assert result.total_messages == expected_threads
+            assert result.threads_with_replies_fetched == 0
+        finally:
+            conn.close()
+
+    def test_fetch_full_threads(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        from slack_cached.cache import fetch_channel_messages
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect
+
+        channel = next(ch_id for ch_id, _ in workspace.threads)
+        expected_threads = sum(1 for ch_id, _ in workspace.threads if ch_id == channel)
+        expected_total = sum(
+            len(msgs) for (ch_id, _ts), msgs in workspace.threads.items() if ch_id == channel
+        )
+
+        client = SlackClient(
+            Credentials(token="xoxb-fake", cookie=None),
+            base_url=f"{fake_server}/api",
+        )
+        conn = connect(tmp_path / "cache.db")
+        try:
+            result = fetch_channel_messages(conn, client, channel, full_threads=True)
+            assert result.fetched_messages == expected_threads + expected_total
+            assert result.total_messages == expected_total
+            assert result.threads_with_replies_fetched > 0
+        finally:
+            conn.close()
+
+    def test_fetch_then_show_thread(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        from slack_cached.cache import fetch_channel_messages, load_thread
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect
+        from slack_cached.urls import ThreadRef
+
+        (channel, thread_ts), thread_msgs = next(iter(workspace.threads.items()))
+
+        client = SlackClient(
+            Credentials(token="xoxb-fake", cookie=None),
+            base_url=f"{fake_server}/api",
+        )
+        conn = connect(tmp_path / "cache.db")
+        try:
+            fetch_channel_messages(conn, client, channel)
+            ref = ThreadRef(channel=channel, thread_ts=thread_ts)
+            cached = load_thread(conn, ref)
+            assert len(cached) == 1
+            assert cached[0].ts == thread_ts
+        finally:
+            conn.close()

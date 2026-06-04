@@ -6,7 +6,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from slack_cached.cache import fetch_channels, fetch_thread, fetch_users, load_thread
+from slack_cached.cache import (
+    fetch_channel_messages,
+    fetch_channels,
+    fetch_thread,
+    fetch_users,
+    load_thread,
+)
 from slack_cached.storage import (
     connect,
     get_channel,
@@ -154,6 +160,43 @@ class FakeListClient:
         yield from self._channels
 
 
+class FakeChannelClient:
+    """In-memory stand-in for channel message fetching."""
+
+    def __init__(
+        self,
+        history: list[dict[str, Any]] | None = None,
+        thread_replies: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self._history = history or []
+        self._thread_replies = thread_replies or {}
+        self.calls: list[dict[str, Any]] = []
+
+    def iter_channel_history(
+        self,
+        channel: str,
+        oldest: str | None = None,
+        latest: str | None = None,
+        limit: int = 200,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append(
+            {"method": "history", "channel": channel, "oldest": oldest, "latest": latest}
+        )
+        yield from self._history
+
+    def iter_thread_replies(
+        self,
+        channel: str,
+        thread_ts: str,
+        oldest: str | None = None,
+        limit: int = 200,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append(
+            {"method": "replies", "channel": channel, "thread_ts": thread_ts, "oldest": oldest}
+        )
+        yield from self._thread_replies.get(thread_ts, [])
+
+
 def test_fetch_users_caches_all(tmp_path: Path) -> None:
     conn = connect(tmp_path / "cache.db")
     client = FakeListClient(
@@ -202,7 +245,86 @@ def test_fetch_users_is_idempotent(tmp_path: Path) -> None:
     assert first.added == 1
 
     result = fetch_users(conn, client)
-    # The second pass re-processes the same record but adds nothing new.
     assert result.processed == 1
     assert result.added == 0
     assert result.total == 1
+
+
+def test_fetch_channel_messages_stores_top_level_only(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeChannelClient(
+        history=[
+            _msg("1700000000.000100", text="standalone"),
+            {
+                "ts": "1700000000.000200",
+                "text": "thread parent",
+                "user": "U1",
+                "thread_ts": "1700000000.000200",
+                "reply_count": 2,
+            },
+            _msg("1700000000.000300", text="another standalone"),
+        ],
+    )
+
+    result = fetch_channel_messages(conn, client, "C1")
+
+    assert result.fetched_messages == 3
+    assert result.total_messages == 3
+    assert result.threads_with_replies_fetched == 0
+    assert len(client.calls) == 1
+    assert client.calls[0]["method"] == "history"
+
+
+def test_fetch_channel_messages_full_threads_fetches_replies(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeChannelClient(
+        history=[
+            _msg("1700000000.000100", text="standalone"),
+            {
+                "ts": "1700000000.000200",
+                "text": "thread parent",
+                "user": "U1",
+                "thread_ts": "1700000000.000200",
+                "reply_count": 1,
+                "latest_reply": "1700000000.000400",
+            },
+        ],
+        thread_replies={
+            "1700000000.000200": [
+                {
+                    "ts": "1700000000.000200",
+                    "text": "thread parent",
+                    "user": "U1",
+                    "thread_ts": "1700000000.000200",
+                },
+                _msg("1700000000.000400", text="reply1"),
+            ],
+        },
+    )
+
+    result = fetch_channel_messages(conn, client, "C1", full_threads=True)
+
+    assert result.fetched_messages == 4
+    assert result.total_messages == 3
+    assert result.threads_with_replies_fetched == 1
+    history_calls = [c for c in client.calls if c["method"] == "history"]
+    replies_calls = [c for c in client.calls if c["method"] == "replies"]
+    assert len(history_calls) == 1
+    assert len(replies_calls) == 1
+    assert replies_calls[0]["thread_ts"] == "1700000000.000200"
+
+
+def test_fetch_channel_messages_standalone_messages_use_own_ts_as_thread_ts(
+    tmp_path: Path,
+) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeChannelClient(
+        history=[
+            _msg("1700000000.000100", text="standalone"),
+        ],
+    )
+
+    fetch_channel_messages(conn, client, "C1")
+
+    state = get_thread_state(conn, "C1", "1700000000.000100")
+    assert state is not None

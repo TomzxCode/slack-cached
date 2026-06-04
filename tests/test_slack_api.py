@@ -98,3 +98,40 @@ def test_iter_channels_passes_types_and_stops_without_cursor() -> None:
     assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/conversations.list"
     assert session.calls[0]["params"]["types"] == "public_channel"
     assert len(session.calls) == 1
+
+
+def test_iter_channel_history_follows_cursor() -> None:
+    session = FakeSession(
+        [
+            {
+                "ok": True,
+                "has_more": True,
+                "messages": [{"ts": "1.0"}, {"ts": "2.0"}],
+                "response_metadata": {"next_cursor": "page2"},
+            },
+            {"ok": True, "messages": [{"ts": "3.0"}], "response_metadata": {}},
+        ]
+    )
+    client = _client(session)
+
+    msgs = list(client.iter_channel_history(channel="C1"))
+
+    assert [m["ts"] for m in msgs] == ["1.0", "2.0", "3.0"]
+    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/conversations.history"
+    assert session.calls[0]["params"]["channel"] == "C1"
+    assert "cursor" not in session.calls[0]["params"]
+    assert session.calls[1]["params"]["cursor"] == "page2"
+
+
+def test_iter_channel_history_stops_without_has_more() -> None:
+    session = FakeSession(
+        [
+            {"ok": True, "messages": [{"ts": "1.0"}]},
+        ]
+    )
+    client = _client(session)
+
+    msgs = list(client.iter_channel_history(channel="C1"))
+
+    assert len(msgs) == 1
+    assert len(session.calls) == 1
