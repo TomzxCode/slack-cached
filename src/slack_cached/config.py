@@ -59,10 +59,25 @@ def _load_config_file() -> dict[str, str | None]:
     return dict(dotenv_values(path))
 
 
-def load_credentials() -> Credentials:
+def load_api_base_url() -> str | None:
+    """Return an API base URL override from env var or config file, if any.
+
+    Priority: ``SLACK_API_BASE_URL`` env var, then config file key of the same
+    name.  Returns ``None`` when neither is set, which callers should treat as
+    "use the default".
+    """
+    value = os.environ.get("SLACK_API_BASE_URL", "").strip()
+    if not value:
+        config = _load_config_file()
+        value = (config.get("SLACK_API_BASE_URL") or "").strip()
+    return value or None
+
+
+def load_credentials(require: bool = True) -> Credentials:
     """Resolve Slack credentials from env vars or the config file.
 
-    Raises SystemExit if no token can be found.
+    Raises SystemExit if no token can be found and ``require`` is True.
+    When ``require`` is False, returns empty credentials instead of exiting.
     """
     token = os.environ.get("SLACK_TOKEN", "").strip()
     cookie = os.environ.get("SLACK_COOKIE", "").strip() or None
@@ -76,6 +91,8 @@ def load_credentials() -> Credentials:
             cookie = file_cookie or None
 
     if not token:
+        if not require:
+            return Credentials(token="", cookie=None)
         config_path = config_dir() / CONFIG_FILENAME
         raise SystemExit(
             "No Slack token found.\n"

@@ -105,6 +105,13 @@ def _add_db_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=f"SQLite cache path (default: {default_db_path()}).",
     )
+    parser.add_argument(
+        "--api-base-url",
+        default=None,
+        help="Slack API base URL (default: https://slack.com/api, use "
+        "http://localhost:PORT/api for the fake server).  Can also be set via "
+        "the SLACK_API_BASE_URL environment variable.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
 
 
@@ -118,14 +125,21 @@ def _open_db(args: argparse.Namespace) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _build_client() -> SlackClient:
+def _build_client(args: argparse.Namespace) -> SlackClient:
     # Imported lazily so commands that never hit the network (e.g.
     # `show --no-fetch`) avoid loading the requests-based API client.
-    from .config import load_credentials
-    from .slack_api import SlackClient
+    from .config import load_api_base_url, load_credentials
+    from .slack_api import DEFAULT_API_BASE, SlackClient
 
-    credentials = load_credentials()
-    return SlackClient(credentials)
+    base_url = args.api_base_url or load_api_base_url() or DEFAULT_API_BASE
+    try:
+        credentials = load_credentials()
+    except SystemExit:
+        if base_url != DEFAULT_API_BASE:
+            credentials = load_credentials(require=False)
+        else:
+            raise
+    return SlackClient(credentials, base_url=base_url)
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
@@ -133,7 +147,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     from .cache import fetch_thread
 
     ref = _resolve_ref(args)
-    client = _build_client()
+    client = _build_client(args)
     with _open_db(args) as conn:
         result = fetch_thread(conn, client, ref)
     print(
@@ -227,7 +241,7 @@ def cmd_show(args: argparse.Namespace) -> int:
             # requests-based Slack client (see _build_client).
             from .cache import fetch_thread
 
-            client = _build_client()
+            client = _build_client(args)
             fetch_thread(conn, client, ref)
         with _timed("load_thread"):
             messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
@@ -250,7 +264,7 @@ def cmd_fetch_users(args: argparse.Namespace) -> int:
     """Fetch and cache every workspace user."""
     from .cache import fetch_users
 
-    client = _build_client()
+    client = _build_client(args)
     with _open_db(args) as conn:
         result = fetch_users(conn, client)
     print(
@@ -264,7 +278,7 @@ def cmd_fetch_channels(args: argparse.Namespace) -> int:
     """Fetch and cache every visible conversation."""
     from .cache import fetch_channels
 
-    client = _build_client()
+    client = _build_client(args)
     with _open_db(args) as conn:
         result = fetch_channels(conn, client)
     print(
@@ -299,7 +313,7 @@ def cmd_show_users(args: argparse.Namespace) -> int:
             from .cache import fetch_users
 
             log.info("users_not_cached_fetching")
-            fetch_users(conn, _build_client())
+            fetch_users(conn, _build_client(args))
         users = load_users(conn)
 
     if args.json:
@@ -317,7 +331,7 @@ def cmd_show_channels(args: argparse.Namespace) -> int:
             from .cache import fetch_channels
 
             log.info("channels_not_cached_fetching")
-            fetch_channels(conn, _build_client())
+            fetch_channels(conn, _build_client(args))
         channels = load_channels(conn)
 
     if args.json:

@@ -8,11 +8,7 @@ import pytest
 import structlog
 
 from slack_cached.config import Credentials
-from slack_cached.slack_api import (
-    CONVERSATIONS_LIST_URL,
-    USERS_LIST_URL,
-    SlackClient,
-)
+from slack_cached.slack_api import DEFAULT_API_BASE, SlackClient
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +79,7 @@ def test_iter_users_follows_cursor() -> None:
     users = list(client.iter_users())
 
     assert [u["id"] for u in users] == ["U1", "U2", "U3"]
-    assert session.calls[0]["url"] == USERS_LIST_URL
+    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/users.list"
     assert "cursor" not in session.calls[0]["params"]
     assert session.calls[1]["params"]["cursor"] == "next"
 
@@ -99,6 +95,6 @@ def test_iter_channels_passes_types_and_stops_without_cursor() -> None:
     channels = list(client.iter_channels(types="public_channel"))
 
     assert [c["id"] for c in channels] == ["C1"]
-    assert session.calls[0]["url"] == CONVERSATIONS_LIST_URL
+    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/conversations.list"
     assert session.calls[0]["params"]["types"] == "public_channel"
     assert len(session.calls) == 1

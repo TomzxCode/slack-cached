@@ -3,6 +3,10 @@
 The client supports both bot tokens (which only need an Authorization header)
 and the browser xoxc/d-cookie scheme used by Slack's web client (which also
 needs the d cookie). The cookie is sent when available and otherwise omitted.
+
+``base_url`` can be overridden to point at a different API server (e.g. a
+local fake server).  Set ``SlackClient(credentials, base_url=...)`` or the
+``SLACK_API_BASE_URL`` environment variable.
 """
 
 from __future__ import annotations
@@ -16,9 +20,7 @@ import structlog
 
 from .config import Credentials
 
-REPLIES_URL = "https://slack.com/api/conversations.replies"
-USERS_LIST_URL = "https://slack.com/api/users.list"
-CONVERSATIONS_LIST_URL = "https://slack.com/api/conversations.list"
+DEFAULT_API_BASE = "https://slack.com/api"
 DEFAULT_LIMIT = 200
 DEFAULT_LIST_LIMIT = 1000
 DEFAULT_CHANNEL_TYPES = "public_channel,private_channel,mpim,im"
@@ -40,10 +42,16 @@ class SlackClient:
         credentials: Credentials,
         session: requests.Session | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        base_url: str = DEFAULT_API_BASE,
     ) -> None:
         self._credentials = credentials
         self._session = session or requests.Session()
         self._sleep = sleep
+        self._base_url = base_url.rstrip("/")
+
+        self._replies_url = f"{self._base_url}/conversations.replies"
+        self._users_list_url = f"{self._base_url}/users.list"
+        self._conversations_list_url = f"{self._base_url}/conversations.list"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._credentials.token}"}
@@ -124,7 +132,7 @@ class SlackClient:
             if cursor:
                 params["cursor"] = cursor
 
-            data = self._get(REPLIES_URL, params)
+            data = self._get(self._replies_url, params)
             yield from data.get("messages", [])
 
             if not data.get("has_more"):
@@ -172,7 +180,7 @@ class SlackClient:
 
     def iter_users(self, limit: int = DEFAULT_LIST_LIMIT) -> Iterator[dict[str, Any]]:
         """Yield every member of the workspace via users.list."""
-        return self._iter_cursor(USERS_LIST_URL, "members", {"limit": limit})
+        return self._iter_cursor(self._users_list_url, "members", {"limit": limit})
 
     def iter_channels(
         self,
@@ -181,7 +189,7 @@ class SlackClient:
     ) -> Iterator[dict[str, Any]]:
         """Yield every conversation visible to the token via conversations.list."""
         return self._iter_cursor(
-            CONVERSATIONS_LIST_URL,
+            self._conversations_list_url,
             "channels",
             {"limit": limit, "types": types},
         )

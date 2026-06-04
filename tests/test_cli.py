@@ -29,7 +29,7 @@ def _populate_single_message(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> 
         ):
             yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
 
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeClient())
     monkeypatch.setattr(cache_module, "SlackClient", FakeClient, raising=False)
 
     rc = cli.main(
@@ -94,7 +94,7 @@ def test_show_renders_user_name_when_cached(
                 "real_name": "Alice Smith",
             }
 
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeUsers())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeUsers())
     assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
 
     rc = cli.main(
@@ -162,7 +162,7 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
             calls.append(oldest)
             yield {"ts": thread_ts, "user": "U1", "text": "root"}
 
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeClient())
 
     rc = cli.main(
         [
@@ -205,7 +205,7 @@ def test_fetch_users_then_show(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeListClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["fetch-users", "--db", str(db_path)])
     assert rc == 0
@@ -223,7 +223,7 @@ def test_show_users_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeListClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-users", "--db", str(db_path), "--json"])
     assert rc == 0
@@ -237,7 +237,7 @@ def test_fetch_channels_then_show(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeListClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["fetch-channels", "--db", str(db_path)])
     assert rc == 0
@@ -255,7 +255,7 @@ def test_show_channels_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda: FakeListClient())
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-channels", "--db", str(db_path), "--json"])
     assert rc == 0
