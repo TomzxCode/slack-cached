@@ -1,7 +1,7 @@
 # slack-cached
 
-A small Python CLI that caches Slack threads, users, and channels to a local
-SQLite database.
+A small Python CLI that caches Slack threads, channel messages, users, and
+channels to a local SQLite database.
 
 Given a Slack thread URL (or an explicit channel id and root timestamp), it
 fetches the thread via `conversations.replies` and stores every message in a
@@ -36,6 +36,7 @@ Credentials are loaded in this order:
    ```
    SLACK_TOKEN=xoxb-...
    SLACK_COOKIE=...
+   SLACK_API_BASE_URL=https://slack.com/api
    ```
 
 ## Cache location
@@ -46,8 +47,10 @@ Override with `--db /path/to/file.db`.
 
 ## Usage
 
-All commands accept `-v/--verbose` for debug logging on stderr and `--db` to
-override the cache location.
+All commands accept `-v/--verbose` for debug logging on stderr, `--db` to
+override the cache location, and `--api-base-url` to override the Slack API
+base URL (defaults to `https://slack.com/api`; also settable via
+`SLACK_API_BASE_URL`).
 
 ### Threads
 
@@ -71,6 +74,21 @@ slack-cached show https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
 slack-cached show --json https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
 ```
 
+### Channel messages
+
+Fetch all top-level messages in a channel via `conversations.history`:
+
+```bash
+slack-cached fetch-channel-messages --channel C0123ABCDEF
+```
+
+Add `--full-threads` to also fetch every reply thread for messages that have
+replies:
+
+```bash
+slack-cached fetch-channel-messages --channel C0123ABCDEF --full-threads
+```
+
 ### Users and channels
 
 Cache or refresh every workspace user or visible channel:
@@ -89,7 +107,7 @@ slack-cached show-channels --json
 ```
 
 When a thread's authors are present in the cached users, `show` renders their
-display names instead of raw user ids.
+real name and handle (e.g. `Alice Smith (alice)`) instead of raw user ids.
 
 ## Refresh behavior
 
@@ -98,6 +116,28 @@ If the thread is already cached, it requests `conversations.replies` with
 `oldest=<latest_cached_ts>` so the API returns only new replies (and any
 recent edits at that boundary).
 Messages are upserted by `ts`, so edits replace the older version in place.
+
+HTTP 429 / `ratelimited` responses are retried automatically with exponential
+backoff (up to 5 attempts), respecting the `Retry-After` header.
+
+## Fake Slack server
+
+A built-in fake Slack API server for testing and development:
+
+```bash
+uv run slack-fake-server --help
+uv run slack-fake-server --port 8199 --num-threads 50
+```
+
+It serves deterministic workspace data (`conversations.list`,
+`conversations.replies`, `conversations.history`, `users.list`) and can
+simulate Slack-tier rate limiting with `--rate-limits`.
+
+Point `slack-cached` at it with:
+
+```bash
+slack-cached --api-base-url http://localhost:8199/api fetch ...
+```
 
 ## Development
 
