@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sqlite3
 import sys
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -143,7 +144,10 @@ def _build_client(args: argparse.Namespace) -> SlackClient:
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
-    """Cache or refresh the given thread."""
+    """Cache or refresh a thread, or fetch all messages from a channel."""
+    if args.channel and not args.ts and not args.url:
+        return _cmd_fetch_channel_messages(args)
+
     from .cache import fetch_thread
 
     ref = _resolve_ref(args)
@@ -158,6 +162,59 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 0
+
+
+def _cmd_fetch_channel_messages(args: argparse.Namespace) -> int:
+    """Fetch messages from a channel."""
+    from .cache import fetch_channel_messages
+
+    oldest = _oldest_ts_from_last(args.last)
+    client = _build_client(args)
+    with _open_db(args) as conn:
+        result = fetch_channel_messages(
+            conn, client, args.channel, full_threads=args.full_threads, oldest=oldest
+        )
+    detail = (
+        f", {result.threads_with_replies_fetched} threads with replies fetched"
+        if args.full_threads
+        else ""
+    )
+    print(
+        f"cached {result.total_messages} messages for {result.channel} "
+        f"({result.fetched_messages} fetched{detail})",
+        file=sys.stderr,
+    )
+    return 0
+
+
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)([dhms])", re.IGNORECASE)
+_DURATION_UNITS = {"d": "days", "h": "hours", "m": "minutes", "s": "seconds"}
+
+
+def _parse_duration(text: str) -> timedelta | None:
+    """Parse a humanized duration string (e.g. ``24h``, ``2d5h30m``, ``90m``).
+
+    Returns *None* for the special value ``"all"`` (meaning no limit).
+    Raises ``ValueError`` on unrecognised input.
+    """
+    if text.lower() == "all":
+        return None
+    parts = _DURATION_RE.findall(text)
+    if not parts or "".join(f"{v}{u}" for v, u in parts) != text:
+        raise ValueError(f"invalid duration: {text!r}")
+    kwargs: dict[str, float] = {}
+    for value, unit in parts:
+        kwargs[_DURATION_UNITS[unit.lower()]] = float(value)
+    return timedelta(**kwargs)
+
+
+def _oldest_ts_from_last(text: str) -> str | None:
+    """Convert a --last duration string to an epoch-seconds string, or None."""
+    delta = _parse_duration(text)
+    if delta is None:
+        return None
+    oldest_dt = datetime.now(tz=UTC) - delta
+    return f"{oldest_dt.timestamp():.6f}"
 
 
 def _format_ts(ts: str) -> str:
@@ -288,26 +345,6 @@ def cmd_fetch_channels(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_fetch_channel_messages(args: argparse.Namespace) -> int:
-    """Fetch messages from a channel."""
-    from .cache import fetch_channel_messages
-
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        result = fetch_channel_messages(conn, client, args.channel, full_threads=args.full_threads)
-    detail = (
-        f", {result.threads_with_replies_fetched} threads with replies fetched"
-        if args.full_threads
-        else ""
-    )
-    print(
-        f"cached {result.total_messages} messages for {result.channel} "
-        f"({result.fetched_messages} fetched{detail})",
-        file=sys.stderr,
-    )
-    return 0
-
-
 def _render_users_human(users: list[CachedUser]) -> str:
     lines = [f"{len(users)} user(s)", ""]
     for user in users:
@@ -369,8 +406,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    fetch = sub.add_parser("fetch", help="Cache or refresh a Slack thread.")
+    fetch = sub.add_parser(
+        "fetch",
+        help="Cache or refresh a Slack thread, or fetch all messages from a channel.",
+    )
     _add_target_args(fetch)
+    fetch.add_argument(
+        "--full-threads",
+        action="store_true",
+        help="When fetching a channel, also fetch all replies for every thread.",
+    )
+    fetch.add_argument(
+        "--last",
+        type=str,
+        default="1d",
+        metavar="DURATION",
+        help="When fetching a channel, limit history to the given lookback "
+        "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
+    )
     fetch.set_defaults(func=cmd_fetch)
 
     show = sub.add_parser(
@@ -399,23 +452,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_db_args(fetch_channels_cmd)
     fetch_channels_cmd.set_defaults(func=cmd_fetch_channels)
-
-    fetch_channel_messages_cmd = sub.add_parser(
-        "fetch-channel-messages",
-        help="Fetch messages from a channel (top-level by default).",
-    )
-    fetch_channel_messages_cmd.add_argument(
-        "--channel",
-        required=True,
-        help="Slack channel id (e.g. C0123ABCDEF).",
-    )
-    fetch_channel_messages_cmd.add_argument(
-        "--full-threads",
-        action="store_true",
-        help="Also fetch all replies for every thread in the channel.",
-    )
-    _add_db_args(fetch_channel_messages_cmd)
-    fetch_channel_messages_cmd.set_defaults(func=cmd_fetch_channel_messages)
 
     show_users_cmd = sub.add_parser(
         "show-users",

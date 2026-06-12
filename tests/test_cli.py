@@ -295,14 +295,14 @@ def test_fetch_channel_messages_basic(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     monkeypatch.setattr(cli, "_build_client", lambda args: client)
 
-    rc = cli.main(["fetch-channel-messages", "--channel", "C1", "--db", str(db_path)])
+    rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
     assert rc == 0
 
 
-def test_fetch_channel_messages_requires_channel(tmp_path: Path) -> None:
+def test_fetch_channel_requires_url_or_channel_ts(tmp_path: Path) -> None:
     db_path = tmp_path / "cache.db"
     with pytest.raises(SystemExit):
-        cli.main(["fetch-channel-messages", "--db", str(db_path)])
+        cli.main(["fetch", "--db", str(db_path)])
 
 
 def test_fetch_channel_messages_full_threads(
@@ -336,7 +336,7 @@ def test_fetch_channel_messages_full_threads(
 
     rc = cli.main(
         [
-            "fetch-channel-messages",
+            "fetch",
             "--channel",
             "C1",
             "--full-threads",
@@ -345,3 +345,63 @@ def test_fetch_channel_messages_full_threads(
         ]
     )
     assert rc == 0
+
+
+class FakeChannelClientWithHistory:
+    """Stub client that records oldest passed to iter_channel_history."""
+
+    def __init__(self, messages=None):
+        self._messages = messages or []
+        self.oldest_seen: str | None = "unset"
+
+    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+        self.oldest_seen = oldest
+        yield from self._messages
+
+    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        return iter([])
+
+
+def test_fetch_channel_default_last_is_one_day(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClientWithHistory(
+        messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
+    assert rc == 0
+    assert client.oldest_seen is not None
+
+
+def test_fetch_channel_last_zero_fetches_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClientWithHistory(
+        messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch", "--channel", "C1", "--last", "all", "--db", str(db_path)])
+    assert rc == 0
+    assert client.oldest_seen is None
+
+
+def test_parse_duration() -> None:
+    from datetime import timedelta
+
+    assert cli._parse_duration("24h") == timedelta(hours=24)
+    assert cli._parse_duration("1d") == timedelta(days=1)
+    assert cli._parse_duration("2d5h30m") == timedelta(days=2, hours=5, minutes=30)
+    assert cli._parse_duration("90m") == timedelta(minutes=90)
+    assert cli._parse_duration("5h23m13s") == timedelta(hours=5, minutes=23, seconds=13)
+    assert cli._parse_duration("all") is None
+    assert cli._parse_duration("ALL") is None
+
+    with pytest.raises(ValueError, match="invalid duration"):
+        cli._parse_duration("abc")
+    with pytest.raises(ValueError, match="invalid duration"):
+        cli._parse_duration("")

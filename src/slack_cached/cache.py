@@ -140,6 +140,7 @@ def fetch_channel_messages(
     client: SlackClient,
     channel: str,
     full_threads: bool = False,
+    oldest: str | None = None,
 ) -> ChannelFetchResult:
     """Fetch messages from a channel.
 
@@ -147,10 +148,20 @@ def fetch_channel_messages(
     (standalone messages and thread parents, but not thread replies).  When
     *full_threads* is True, every thread that has replies is also fetched in
     full via conversations.replies.
-    """
-    log.info("fetch_channel_messages_start", channel=channel, full_threads=full_threads)
 
-    history: list[dict[str, Any]] = list(client.iter_channel_history(channel=channel))
+    *oldest* limits the history scan to messages with ts >= oldest (epoch
+    seconds as a string).  When None, the entire channel history is fetched.
+    """
+    log.info(
+        "fetch_channel_messages_start",
+        channel=channel,
+        full_threads=full_threads,
+        oldest=oldest,
+    )
+
+    history: list[dict[str, Any]] = list(
+        client.iter_channel_history(channel=channel, oldest=oldest)
+    )
     log.info("fetch_channel_history_done", channel=channel, count=len(history))
 
     written = 0
