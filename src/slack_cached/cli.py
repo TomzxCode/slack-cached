@@ -31,6 +31,7 @@ from .storage import (
     connect,
     get_channel,
     get_thread_state,
+    load_channel_messages,
     load_channels,
     load_thread_messages,
     load_user_display_names,
@@ -291,18 +292,74 @@ def _render_json(
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
+def _render_channel_human(
+    channel: str,
+    messages: list[CachedMessage],
+    user_names: dict[str, str] | None = None,
+    channel_name: str | None = None,
+) -> str:
+    names = user_names or {}
+    header = channel_name or channel
+    lines = [
+        f"Channel {header}",
+        f"{len(messages)} message(s)",
+        "",
+    ]
+    for msg in messages:
+        author = names.get(msg.user, msg.user) if msg.user else "(unknown)"
+        text = msg.text if msg.text is not None else ""
+        lines.append(f"[{_format_ts(msg.ts)}] {author}")
+        for text_line in text.splitlines() or [""]:
+            lines.append(f"    {text_line}")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _render_channel_json(
+    channel: str,
+    messages: list[CachedMessage],
+    user_names: dict[str, str] | None = None,
+    channel_name: str | None = None,
+) -> str:
+    names = user_names or {}
+    enriched: list[dict[str, Any]] = []
+    for msg in messages:
+        d = {"ts": msg.ts, "user": msg.user, "text": msg.text}
+        if msg.user and msg.user in names:
+            d["user_name"] = names[msg.user]
+        enriched.append(d)
+    payload: dict[str, Any] = {
+        "channel": channel,
+        "channel_name": channel_name,
+        "message_count": len(messages),
+        "messages": enriched,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Print the cached thread. Human-readable by default, JSON with --json.
 
     Fetches first if not already cached (unless --no-fetch is given).
+
+    When --channel is given without --ts, shows all messages for that channel
+    (fetching first if needed, unless --no-fetch).
     """
+    if args.channel and not args.ts and not args.url:
+        return _cmd_show_channel(args)
+
     log.debug("cmd_show_start")
     with _timed("resolve_ref"):
         ref = _resolve_ref(args)
     with _open_db(args) as conn:
         state = get_thread_state(conn, ref.channel, ref.thread_ts)
         if state is None and not args.no_fetch:
-            log.info("thread_not_cached_fetching", channel=ref.channel, thread_ts=ref.thread_ts)
+            log.info(
+                "thread_not_cached_fetching",
+                channel=ref.channel,
+                thread_ts=ref.thread_ts,
+                thread_ts_iso=_format_ts(ref.thread_ts),
+            )
             if args.verbose:
                 print(
                     f"fetching thread {ref.channel}/{ref.thread_ts} from Slack...",
@@ -328,6 +385,40 @@ def cmd_show(args: argparse.Namespace) -> int:
             _render_json(ref, messages, user_names, channel_name)
             if args.json
             else _render_human(ref, messages, user_names)
+        )
+    with _timed("write_output", bytes=len(output)):
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    return 0
+
+
+def _cmd_show_channel(args: argparse.Namespace) -> int:
+    """Show all messages for a channel, fetching first if needed."""
+    oldest = _oldest_ts_from_last(args.last)
+    with _open_db(args) as conn:
+        messages = load_channel_messages(conn, args.channel)
+        if not messages and not args.no_fetch:
+            log.info("channel_not_cached_fetching", channel=args.channel)
+            if args.verbose:
+                print(
+                    f"fetching messages for {args.channel} from Slack...",
+                    file=sys.stderr,
+                )
+            from .cache import fetch_channel_messages
+
+            client = _build_client(args)
+            fetch_channel_messages(conn, client, args.channel, oldest=oldest)
+            messages = load_channel_messages(conn, args.channel)
+        with _timed("build_user_names"):
+            user_names = _build_user_names(conn, messages)
+        cached_ch = get_channel(conn, args.channel)
+        channel_name = cached_ch.name if cached_ch else None
+
+    with _timed("render", format="json" if args.json else "human", messages=len(messages)):
+        output = (
+            _render_channel_json(args.channel, messages, user_names, channel_name)
+            if args.json
+            else _render_channel_human(args.channel, messages, user_names, channel_name)
         )
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
@@ -446,18 +537,26 @@ def _build_parser() -> argparse.ArgumentParser:
 
     show = sub.add_parser(
         "show",
-        help="Print a cached thread to stdout (human-readable by default).",
+        help="Print a cached thread or channel to stdout (human-readable by default).",
     )
     _add_target_args(show)
     show.add_argument(
         "--no-fetch",
         action="store_true",
-        help="Do not auto-fetch when the thread is not yet cached.",
+        help="Do not auto-fetch when the thread or channel is not yet cached.",
     )
     show.add_argument(
         "--json",
         action="store_true",
         help="Render output as JSON instead of human-readable text.",
+    )
+    show.add_argument(
+        "--last",
+        type=str,
+        default="1d",
+        metavar="DURATION",
+        help="When showing a channel, limit history to the given lookback "
+        "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
     )
     show.set_defaults(func=cmd_show)
 

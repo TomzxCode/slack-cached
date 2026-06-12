@@ -461,6 +461,35 @@ def count_channels(conn: sqlite3.Connection) -> int:
     return int(row["n"]) if row else 0
 
 
+def load_channel_messages(
+    conn: sqlite3.Connection, channel: str, oldest: str | None = None
+) -> list[CachedMessage]:
+    """Return all cached messages for a channel (across all threads), ordered chronologically."""
+    if oldest is not None:
+        rows = conn.execute(
+            "SELECT ts, user, text, payload FROM messages "
+            "WHERE channel = ? AND CAST(ts AS REAL) >= CAST(? AS REAL) "
+            "ORDER BY CAST(ts AS REAL) ASC",
+            (channel, oldest),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT ts, user, text, payload FROM messages "
+            "WHERE channel = ? "
+            "ORDER BY CAST(ts AS REAL) ASC",
+            (channel,),
+        ).fetchall()
+    return [
+        CachedMessage(
+            ts=row["ts"],
+            user=row["user"],
+            text=row["text"],
+            payload=json.loads(row["payload"]),
+        )
+        for row in rows
+    ]
+
+
 def count_channel_messages(conn: sqlite3.Connection, channel: str) -> int:
     """Return the number of cached messages for a channel (across all threads)."""
     row = conn.execute(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -33,6 +34,15 @@ from .storage import (
 from .urls import ThreadRef
 
 log = structlog.get_logger(__name__)
+
+
+def _ts_to_iso(ts: str | None) -> str | None:
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=UTC).isoformat(timespec="seconds")
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -91,8 +101,10 @@ def fetch_thread(
         "fetch_thread_start",
         channel=ref.channel,
         thread_ts=ref.thread_ts,
+        thread_ts_iso=_ts_to_iso(ref.thread_ts),
         incremental=incremental,
         oldest=oldest,
+        oldest_iso=_ts_to_iso(oldest),
     )
 
     new_messages: list[dict[str, Any]] = list(
@@ -117,6 +129,7 @@ def fetch_thread(
         "fetch_thread_done",
         channel=ref.channel,
         thread_ts=ref.thread_ts,
+        thread_ts_iso=_ts_to_iso(ref.thread_ts),
         written=written,
         total=total,
         incremental=incremental,
@@ -157,6 +170,7 @@ def fetch_channel_messages(
         channel=channel,
         full_threads=full_threads,
         oldest=oldest,
+        oldest_iso=_ts_to_iso(oldest),
     )
 
     history: list[dict[str, Any]] = list(

@@ -285,6 +285,9 @@ class FakeChannelClient:
     def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
         yield from self._thread_replies.get(thread_ts, [])
 
+    def iter_channels(self, types="public_channel", limit=1000):
+        yield {"id": "C1", "name": "general", "is_private": False}
+
 
 def test_fetch_channel_messages_basic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db_path = tmp_path / "cache.db"
@@ -405,3 +408,98 @@ def test_parse_duration() -> None:
         cli._parse_duration("abc")
     with pytest.raises(ValueError, match="invalid duration"):
         cli._parse_duration("")
+
+
+def test_show_channel_without_ts_human(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
+            {"ts": "1700000000.000200", "user": "U2", "text": "world"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["show", "--channel", "C1", "--db", str(db_path)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "Channel C1" in out
+    assert "2 message(s)" in out
+    assert "U1" in out
+    assert "hello" in out
+    assert "U2" in out
+    assert "world" in out
+
+
+def test_show_channel_without_ts_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--json"])
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["channel"] == "C1"
+    assert payload["message_count"] == 1
+    assert payload["messages"][0]["text"] == "hello"
+
+
+def test_show_channel_without_ts_uses_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "cached_msg"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
+    assert rc == 0
+
+    class NoCallClient:
+        def iter_channel_history(self, *a, **kw):
+            raise AssertionError("should not fetch")
+
+    monkeypatch.setattr(cli, "_build_client", lambda args: NoCallClient())
+
+    rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--no-fetch"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "cached_msg" in out
+
+
+def test_show_channel_with_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch-channels", "--db", str(db_path)])
+    assert rc == 0
+
+    rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
+    assert rc == 0
+
+    rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--no-fetch"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "general" in out
