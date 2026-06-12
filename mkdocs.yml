@@ -1,0 +1,103 @@
+site_name: Slack Cached Documentation
+site_description: Documentation for Slack Cached, a tool to cache Slack threads to a local SQLite database
+site_url: https://tomzxcode.github.io/slack-cached
+repo_name: TomzxCode/slack-cached
+repo_url: https://github.com/TomzxCode/slack-cached
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  font:
+    text: Open Sans
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: white
+      accent: green
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: green
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - User Guide:
+    - Getting started: user-guide/getting-started.md
+    - Fetching threads: user-guide/fetching-threads.md
+    - Fetching channel messages: user-guide/fetching-channel-messages.md
+    - Caching users: user-guide/caching-users.md
+    - Caching channels: user-guide/caching-channels.md
+    - Configuration: user-guide/configuration.md
+    - CLI reference: user-guide/cli-reference.md
+  - Developer Guide:
+    - Fake Slack server: developer-guide/fake-slack-server.md
+  - Context:
+    - Project overview: sdlc/context/project-overview.md
+    - Architecture: sdlc/context/architecture.md
+    - Conventions: sdlc/context/conventions.md
+    - Vocabulary: sdlc/context/vocabulary.md
+  - Features:
+    - Thread caching:
+      - Requirements: sdlc/features/FEAT-0001-thread-caching/requirements.md
+      - Specification: sdlc/features/FEAT-0001-thread-caching/specification.md
+    - User caching:
+      - Requirements: sdlc/features/FEAT-0002-user-caching/requirements.md
+      - Specification: sdlc/features/FEAT-0002-user-caching/specification.md
+    - Channel caching:
+      - Requirements: sdlc/features/FEAT-0003-channel-caching/requirements.md
+      - Specification: sdlc/features/FEAT-0003-channel-caching/specification.md
+    - Configuration:
+      - Requirements: sdlc/features/FEAT-0004-config-credentials/requirements.md
+      - Specification: sdlc/features/FEAT-0004-config-credentials/specification.md
+    - URL parsing:
+      - Requirements: sdlc/features/FEAT-0005-url-parsing/requirements.md
+      - Specification: sdlc/features/FEAT-0005-url-parsing/specification.md
+    - Channel message fetching:
+      - Requirements: sdlc/features/FEAT-0006-channel-message-fetching/requirements.md
+      - Specification: sdlc/features/FEAT-0006-channel-message-fetching/specification.md
+    - Fake Slack server:
+      - Requirements: sdlc/features/FEAT-0007-fake-slack-server/requirements.md
+      - Specification: sdlc/features/FEAT-0007-fake-slack-server/specification.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+
+plugins:
+  - search
+  - social
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/TomzxCode/slack-cached
