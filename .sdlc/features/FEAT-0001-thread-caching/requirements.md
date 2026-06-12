@@ -31,11 +31,14 @@ Order rows by priority: Must first, then Should, then May.
 | FR-05 | Must | The system shall record the thread's latest reply timestamp and last-fetched time in the database |
 | FR-06 | Must | The system shall perform incremental fetches when a thread is already cached, passing oldest=latest_reply to the API |
 | FR-07 | Must | The system shall display cached threads in a human-readable format with timestamp, author, and message text |
-| FR-08 | Must | The system shall display cached threads in JSON format when --json is passed |
+| FR-08 | Must | The system shall display cached threads in JSON format when --json is passed, including channel_name and resolved user names |
 | FR-09 | Must | The system shall auto-fetch a thread when show is called for a thread not yet cached, unless --no-fetch is given |
 | FR-10 | Should | The system shall resolve user ids to display names when cached users are available |
 | FR-11 | Should | The system shall handle Slack API pagination via cursor-based iteration |
 | FR-12 | Should | The system shall retry on HTTP 429 rate-limit responses using the Retry-After header |
+| FR-13 | Must | The system shall display all cached messages for a channel when show --channel is given without --ts |
+| FR-14 | Must | The system shall include channel name and resolved user display names in JSON output |
+| FR-15 | Should | The system shall accept --oldest with a duration string (e.g. 7d, 2w, 3h) to limit displayed messages |
 
 ## Non-Functional Requirements
 
@@ -59,8 +62,11 @@ Order rows by priority: Must first, then Should, then May.
 - [ ] FR-04: Running fetch twice on the same thread upserts messages without duplication
 - [ ] FR-06: A second fetch passes oldest=latest_reply and only receives new messages
 - [ ] FR-07: show outputs human-readable text with timestamps, authors, and message text
-- [ ] FR-08: show --json outputs valid JSON with channel, thread_ts, message_count, and messages
+- [ ] FR-08: show --json outputs valid JSON with channel_name, channel, thread_ts, message_count, and messages with resolved user names
 - [ ] FR-10: User ids in thread output are replaced with display names when cached users exist
+- [ ] FR-13: show --channel C1 (without --ts) displays all cached messages for that channel
+- [ ] FR-14: JSON output includes channel_name and user names resolved from the cached users table
+- [ ] FR-15: show --oldest 7d only displays messages newer than 7 days ago
 
 ## Open Questions
 

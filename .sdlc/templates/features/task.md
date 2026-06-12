@@ -4,6 +4,8 @@ title: "<Task title>"
 status: draft
 size: <XS|S|M|L>
 depends_on: []
+completed_date: null
+blocker: null
 ---
 
 # Task NNNN: <Task title>
@@ -13,6 +15,8 @@ depends_on: []
 <What needs to be done and why.>
 
 ## Acceptance Criteria
+
+Every requirement referenced by this task shall have at least one acceptance criterion.
 
 - [ ] <Testable condition>
 

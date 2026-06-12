@@ -23,8 +23,13 @@ CLI (cli.py)
   |                                         -> storage.record_thread_refresh()
   |
   +-- show command  -> storage.load_thread_messages()
-                       storage.load_user_display_names()
-                       render (_render_human or _render_json)
+  |                    storage.load_user_display_names()
+  |                    render (_render_human or _render_json)
+  |
+  +-- show --channel (no --ts) -> _cmd_show_channel()
+                                  storage.load_channel_messages()
+                                  storage.load_user_display_names()
+                                  render
 ```
 
 ## Data Models
@@ -70,8 +75,9 @@ No REST API is exposed. The CLI subcommands serve as the interface:
 
 ### show
 
-- Input: URL or --channel/--ts, optional --db, optional --json, optional --no-fetch, optional -v
-- Output (stdout): human-readable text or JSON
+- Input: URL or --channel/--ts, optional --db, optional --json, optional --no-fetch, optional --oldest (duration), optional -v
+- When --channel is given without --ts: displays all cached messages for the channel, auto-fetching if needed
+- Output (stdout): human-readable text or JSON (includes channel_name and resolved user names)
 - Exit code: 0 on success
 
 ## Sequences
@@ -87,6 +93,25 @@ User -> cli fetch <URL>
   -> storage.upsert_messages(new_messages)
   -> print summary
 ```
+
+### Channel-level display (show --channel without --ts)
+
+```
+User -> cli show --channel C1 [--oldest 7d]
+  -> _cmd_show_channel()
+  -> if not cached and not --no-fetch:
+       -> cache.fetch_channel_messages(conn, client, channel, oldest=...)
+  -> storage.load_channel_messages(conn, channel, oldest=...)
+  -> storage.load_user_display_names(user_ids)
+  -> render (_render_human or _render_json with channel_name)
+```
+
+### Duration parsing
+
+The --oldest flag accepts duration strings converted to epoch timestamps:
+- Format: `<number><unit>` where unit is `h` (hours), `d` (days), or `w` (weeks)
+- Examples: `3h`, `7d`, `2w`
+- Converted by subtracting the duration from the current time
 
 ## Technical Decisions
 

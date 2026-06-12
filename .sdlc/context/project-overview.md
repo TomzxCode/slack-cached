@@ -55,18 +55,3 @@ in pyproject.toml is Tom Rochette.
 - The tool runs as a single-user CLI with no server component (except the fake server for testing)
 - Python 3.13+ is required
 
-## Glossary
-
-| Term | Definition |
-|---|---|
-| thread | A Slack conversation thread, identified by a channel id and root message timestamp |
-| ts | Slack timestamp string in epoch seconds with microseconds, e.g. "1700000000.123456" |
-| permalink | A Slack URL in the form https://workspace.slack.com/archives/CHANNEL/pXXXXXXXXXXXXXXXX |
-| ThreadRef | Internal dataclass holding a channel id and thread_ts pair |
-| upsert | INSERT OR REPLACE SQLite operation that inserts new rows or replaces existing ones |
-| incremental fetch | A refresh that passes `oldest` to the API to only get new/edited messages |
-| xoxb token | A Slack bot token starting with "xoxb-", requiring only an Authorization header |
-| xoxc token | A Slack browser/web-client token starting with "xoxc-", also requiring its matching xoxd d cookie |
-| d cookie | The xoxd- cookie value paired with an xoxc- token for browser-style authentication |
-| conversations.history | Slack API endpoint that returns top-level messages in a channel |
-| fake server | Local HTTP server (fake_slack.py) that mimics the Slack Web API for testing |

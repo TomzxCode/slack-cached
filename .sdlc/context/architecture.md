@@ -41,7 +41,7 @@ Testing / Development:
 | storage.py | SQLite schema management, CRUD operations, logging cursor | sqlite3, structlog |
 | config.py | Credential loading (env vars + config file), path defaults, API base URL | python-dotenv, os |
 | urls.py | Slack permalink parsing into ThreadRef dataclass | urllib.parse, dataclasses |
-| fake_slack.py | Fake Slack API server for testing/development | http.server, random, structlog |
+| fake_slack.py | Fake Slack API server for testing/development (includes chat.postMessage) | http.server, random, structlog |
 
 ## Data Flow
 
@@ -109,7 +109,7 @@ Print summary to stderr
 ### Channel message fetch flow
 
 ```
-User runs: slack-cached fetch-channel-messages --channel C1 [--full-threads]
+User runs: slack-cached fetch --channel C1 [--full-threads]
   |
   v
 slack_api.iter_channel_history(channel)
@@ -161,3 +161,4 @@ Key decisions visible in the code:
   integration testing without code changes
 - Fake Slack server generates deterministic workspace data from a seeded RNG,
   providing reproducible test environments
+- Fake Slack server supports chat.postMessage for simulating message creation

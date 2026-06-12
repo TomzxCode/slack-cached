@@ -36,6 +36,7 @@ fake_slack.py
   |     +-- GET /api/conversations.history
   |     +-- GET /api/users.list
   |     +-- GET /api/conversations.list
+  |     +-- POST /api/chat.postMessage
   |
   +-- run_server() -> HTTPServer
   +-- main() (CLI entry point with argparse)
@@ -62,6 +63,7 @@ fake_slack.py
 |---|---|
 | conversations.replies | 50 |
 | conversations.history | 50 |
+| chat.postMessage | 50 |
 | users.list | 20 |
 | conversations.list | 20 |
 
@@ -84,6 +86,11 @@ The server exposes Slack-compatible JSON responses:
 ### GET /api/conversations.list
 - Params: types, cursor, limit
 - Response: `{ok, channels, response_metadata: {next_cursor}}`
+
+### POST /api/chat.postMessage
+- Params: channel, text, thread_ts (optional)
+- Response: `{ok, message: {ts, channel, user, text, thread_ts, ...}}`
+- Behavior: Creates a new message in the specified channel (or thread if thread_ts is given), appends it to the workspace's in-memory thread data, and returns the full message dict with a generated ts
 
 ## Sequences
 
@@ -134,6 +141,5 @@ Client -> GET /api/users/list?cursor=NQ==&limit=5
 ## Out of Scope
 
 - WebSocket/Events API support
-- Message posting or write operations
 - File upload/download simulation
 - Real-time message delivery

@@ -52,9 +52,11 @@ slack-cached/
 
 ## Commit Messages
 
-Based on the 2-commit git history:
-- Short, imperative descriptions without conventional-commits prefixes
-- Examples: "Initial commit", "Add link to slacrawl"
+Based on the 10-commit git history:
+- Short, imperative descriptions without conventional-commits prefixes (most commits)
+- One commit uses `feat:` prefix (`feat: add fetch-channel-messages...`)
+- Common patterns: "Add support for...", "Implement...", "Merge...", "Update..."
+- Examples: "Add support for show --channel without --ts", "Implement rate limits in fake slack server"
 
 No formal commit message convention is enforced.
 
