@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -29,6 +29,7 @@ from .storage import (
     CachedMessage,
     CachedUser,
     connect,
+    get_channel,
     get_thread_state,
     load_channels,
     load_thread_messages,
@@ -266,13 +267,26 @@ def _render_human(
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def _render_json(ref: ThreadRef, messages: list[CachedMessage]) -> str:
+def _render_json(
+    ref: ThreadRef,
+    messages: list[CachedMessage],
+    user_names: dict[str, str] | None = None,
+    channel_name: str | None = None,
+) -> str:
     """Render a thread as a pretty-printed JSON string."""
-    payload = {
+    names = user_names or {}
+    enriched: list[dict[str, Any]] = []
+    for msg in messages:
+        d = asdict(msg)
+        if msg.user and msg.user in names:
+            d["user_name"] = names[msg.user]
+        enriched.append(d)
+    payload: dict[str, Any] = {
         "channel": ref.channel,
+        "channel_name": channel_name,
         "thread_ts": ref.thread_ts,
         "message_count": len(messages),
-        "messages": [asdict(m) for m in messages],
+        "messages": enriched,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
@@ -306,10 +320,14 @@ def cmd_show(args: argparse.Namespace) -> int:
         with _timed("build_user_names"):
             user_names = _build_user_names(conn, messages)
         log.debug("loaded_user_names", count=len(user_names))
+        cached_ch = get_channel(conn, ref.channel)
+        channel_name = cached_ch.name if cached_ch else None
 
     with _timed("render", format="json" if args.json else "human", messages=len(messages)):
         output = (
-            _render_json(ref, messages) if args.json else _render_human(ref, messages, user_names)
+            _render_json(ref, messages, user_names, channel_name)
+            if args.json
+            else _render_human(ref, messages, user_names)
         )
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
