@@ -55,7 +55,7 @@ import structlog
 log = structlog.get_logger(__name__)
 
 TEAM_ID = "T01FAKEWK"
-EPOCH_BASE = 1704067200.0
+DEFAULT_EPOCH_BASE = 1704067200.0
 
 ENDPOINT_RATE_LIMITS: dict[str, int] = {
     "conversations.replies": 50,
@@ -146,6 +146,7 @@ class WorkspaceParams:
     max_messages_per_thread: int = 12
     activity_ratio: float = 0.6
     rate_limits: bool = False
+    epoch_base: float = DEFAULT_EPOCH_BASE
 
 
 def _parse_range_flag(raw: str) -> tuple[int, int]:
@@ -155,6 +156,28 @@ def _parse_range_flag(raw: str) -> tuple[int, int]:
         return int(parts[0].strip()), int(parts[1].strip())
     val = int(raw.strip())
     return val, val
+
+
+def _parse_epoch_base(raw: str | None) -> float:
+    """Parse the --epoch-base flag value into a unix timestamp."""
+    if raw is None:
+        return DEFAULT_EPOCH_BASE
+    from datetime import UTC, datetime
+
+    raw = raw.strip()
+    if raw.lower() == "now":
+        return datetime.now(tz=UTC).timestamp()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(raw, fmt).replace(tzinfo=UTC)
+            return dt.timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"cannot parse --epoch-base value: {raw!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +786,7 @@ def _generate_users(rng: random.Random, params: WorkspaceParams) -> list[dict[st
             "is_ultra_restricted": False,
             "is_bot": "BOT" in uid,
             "is_app_user": "BOT" in uid,
-            "updated": EPOCH_BASE + rng.randint(0, 86400 * 60),
+            "updated": params.epoch_base + rng.randint(0, 86400 * 60),
             "is_email_confirmed": "BOT" not in uid,
         }
         users.append(user)
@@ -795,21 +818,21 @@ def _generate_channels(rng: random.Random, params: WorkspaceParams) -> list[dict
             "is_pending_ext_shared": False,
             "pending_shared": [],
             "context_team_id": TEAM_ID,
-            "updated": EPOCH_BASE + rng.randint(0, 86400 * 60),
+            "updated": params.epoch_base + rng.randint(0, 86400 * 60),
             "parent_conversation": None,
             "creator": f"U{rng.randint(1, params.num_users):04d}",
             "is_ext_shared": False,
             "shared_team_ids": [TEAM_ID],
             "pending_connected_team_ids": [],
             "is_member": True,
-            "last_read": f"{EPOCH_BASE + rng.randint(0, 86400 * 7):.6f}",
+            "last_read": f"{params.epoch_base + rng.randint(0, 86400 * 7):.6f}",
             "topic": {"value": "", "creator": "", "last_set": 0},
             "purpose": {
                 "value": purpose_text,
                 "creator": f"U{rng.randint(1, params.num_users):04d}",
-                "last_set": int(EPOCH_BASE),
+                "last_set": int(params.epoch_base),
             },
-            "created": int(EPOCH_BASE),
+            "created": int(params.epoch_base),
             "num_members": rng.randint(3, 50),
         }
         channels.append(channel)
@@ -1136,7 +1159,7 @@ def _generate_threads(
             if key not in context:
                 context[key] = _generate_placeholder(key, context)
 
-        base_ts = EPOCH_BASE + (thread_count * 3600 * 4)
+        base_ts = params.epoch_base + (thread_count * 3600 * 4)
         thread_ts = f"{base_ts:.6f}"
 
         fake_messages: list[dict[str, Any]] = []
@@ -1304,6 +1327,54 @@ class Workspace:
         next_cursor = _encode_cursor(next_offset) if has_more else None
         return page, has_more, next_cursor
 
+    def post_message(
+        self,
+        channel: str,
+        text: str,
+        user: str | None = None,
+        thread_ts: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a message to the workspace, either as a new thread or a reply.
+
+        Returns the created message dict (matching the Slack ``chat.postMessage``
+        response shape).
+        """
+        ts = f"{time.time():.6f}"
+        if user is None:
+            user = self.users[0]["id"] if self.users else "UPOST"
+
+        msg: dict[str, Any] = {
+            "type": "message",
+            "user": user,
+            "text": text,
+            "ts": ts,
+            "blocks": [],
+            "files": [],
+            "upload": False,
+            "display_as_bot": False,
+            "is_starred": False,
+            "source_team": TEAM_ID,
+            "user_team": TEAM_ID,
+        }
+
+        if thread_ts:
+            key = (channel, thread_ts)
+            if key not in self.threads:
+                return {"ok": False, "error": "thread_not_found"}
+            msg["thread_ts"] = thread_ts
+            msg["parent_user_id"] = self.threads[key][0]["user"]
+            self.threads[key].append(msg)
+        else:
+            msg["thread_ts"] = ts
+            self.threads[(channel, ts)] = [msg]
+
+        return {
+            "ok": True,
+            "ts": ts,
+            "channel": channel,
+            "message": msg,
+        }
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler
@@ -1334,6 +1405,42 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
             "/api/conversations.history": self._handle_conversations_history,
             "/api/users.list": self._handle_users_list,
             "/api/conversations.list": self._handle_conversations_list,
+        }
+
+        handler = routes.get(path)
+        if handler is None:
+            self._send_json({"ok": False, "error": "unknown_endpoint"}, 404)
+            return
+        handler(params)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode() if content_length else ""
+        params: dict[str, str] = {}
+        if body:
+            for pair in body.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    from urllib.parse import unquote_plus
+                    params[k] = unquote_plus(v)
+        if not params:
+            params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+        if self.rate_limiter is not None:
+            allowed, retry_after = self.rate_limiter.check(path)
+            if not allowed:
+                self._send_json(
+                    {"ok": False, "error": "ratelimited"},
+                    429,
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
+                return
+
+        routes = {
+            "/api/chat.postMessage": self._handle_chat_post_message,
         }
 
         handler = routes.get(path)
@@ -1423,6 +1530,27 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
 
         self._send_json(response)
 
+    def _handle_chat_post_message(self, params: dict[str, str]) -> None:
+        channel = params.get("channel", "")
+        text = params.get("text", "")
+        user = params.get("user") or params.get("as_user")
+        thread_ts = params.get("thread_ts")
+
+        if not channel:
+            self._send_json({"ok": False, "error": "invalid_channel"}, 400)
+            return
+        if not text:
+            self._send_json({"ok": False, "error": "no_text"}, 400)
+            return
+
+        result = self.workspace.post_message(
+            channel=channel, text=text, user=user, thread_ts=thread_ts
+        )
+        if not result.get("ok"):
+            self._send_json(result, 404)
+            return
+        self._send_json(result)
+
     def _send_json(
         self,
         data: dict[str, Any],
@@ -1511,9 +1639,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=False,
         help="Enable Slack-compatible rate limiting (disabled by default).",
     )
+    parser.add_argument(
+        "--epoch-base",
+        default=None,
+        help="Base epoch timestamp for generated data. Accepts 'now', an ISO "
+        "datetime (e.g. '2025-06-01'), or a unix timestamp. "
+        "Default: 1704067200.0 (2024-01-01).",
+    )
 
     args = parser.parse_args(argv)
     min_mpt, max_mpt = _parse_range_flag(args.messages_per_thread)
+    epoch_base = _parse_epoch_base(args.epoch_base)
 
     params = WorkspaceParams(
         seed=args.seed,
@@ -1524,6 +1660,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_messages_per_thread=max_mpt,
         activity_ratio=args.activity_ratio,
         rate_limits=args.rate_limits,
+        epoch_base=epoch_base,
     )
 
     structlog.configure(

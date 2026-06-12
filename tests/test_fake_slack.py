@@ -700,3 +700,169 @@ class TestRateLimitedServer:
             f"{rate_limited_server}/api/conversations.list", params={"limit": "1"}, timeout=5
         )
         assert resp_channels.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Epoch base parameterization
+# ---------------------------------------------------------------------------
+
+
+class TestEpochBase:
+    def test_default_epoch_base_is_jan_2024(self) -> None:
+        from datetime import UTC, datetime
+
+        from slack_cached.fake_slack import DEFAULT_EPOCH_BASE
+
+        assert DEFAULT_EPOCH_BASE == 1704067200.0
+        dt = datetime.fromtimestamp(DEFAULT_EPOCH_BASE, tz=UTC)
+        assert dt.year == 2024 and dt.month == 1 and dt.day == 1
+
+    def test_custom_epoch_base_shifts_thread_timestamps(self) -> None:
+        ws_old = Workspace(seed=42)
+        ws_new = Workspace(seed=42, epoch_base=1750000000.0)
+        old_keys = list(ws_old.threads.keys())
+        new_keys = list(ws_new.threads.keys())
+        assert len(old_keys) == len(new_keys)
+        assert old_keys[0][0] == new_keys[0][0]
+        assert float(new_keys[0][1]) - float(old_keys[0][1]) == pytest.approx(
+            1750000000.0 - 1704067200.0, abs=1.0
+        )
+
+    def test_recent_epoch_base_produces_recent_messages(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(tz=UTC)
+        ws = Workspace(seed=42, epoch_base=(now - timedelta(hours=1)).timestamp())
+        for (_ch, ts), _messages in ws.threads.items():
+            msg_dt = datetime.fromtimestamp(float(ts), tz=UTC)
+            assert abs((now - msg_dt).total_seconds()) < 86400 * 7
+
+    def test_parse_epoch_base_now(self) -> None:
+        from datetime import UTC, datetime
+
+        from slack_cached.fake_slack import _parse_epoch_base
+
+        result = _parse_epoch_base("now")
+        expected = datetime.now(tz=UTC).timestamp()
+        assert abs(result - expected) < 2.0
+
+    def test_parse_epoch_base_iso_date(self) -> None:
+        from slack_cached.fake_slack import _parse_epoch_base
+
+        result = _parse_epoch_base("2025-06-01")
+        assert result == pytest.approx(1748736000.0)
+
+    def test_parse_epoch_base_numeric(self) -> None:
+        from slack_cached.fake_slack import _parse_epoch_base
+
+        result = _parse_epoch_base("1750000000")
+        assert result == 1750000000.0
+
+    def test_parse_epoch_base_none_returns_default(self) -> None:
+        from slack_cached.fake_slack import DEFAULT_EPOCH_BASE, _parse_epoch_base
+
+        assert _parse_epoch_base(None) == DEFAULT_EPOCH_BASE
+
+    def test_parse_epoch_base_invalid_raises(self) -> None:
+        from slack_cached.fake_slack import _parse_epoch_base
+
+        with pytest.raises(ValueError, match="cannot parse"):
+            _parse_epoch_base("not-a-date")
+
+
+# ---------------------------------------------------------------------------
+# chat.postMessage
+# ---------------------------------------------------------------------------
+
+
+class TestPostMessage:
+    def test_post_new_thread_via_api(self, fake_server: str) -> None:
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": "C0001", "text": "hello from post"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["channel"] == "C0001"
+        assert data["message"]["text"] == "hello from post"
+        assert data["message"]["thread_ts"] == data["ts"]
+
+    def test_posted_thread_appears_in_history(self, fake_server: str) -> None:
+        post = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": "C0001", "text": "new thread msg"},
+            timeout=5,
+        )
+        ts = post.json()["ts"]
+        history = _get(fake_server, "/api/conversations.history", {"channel": "C0001"})
+        ts_set = {m["ts"] for m in history["messages"]}
+        assert ts in ts_set
+
+    def test_post_reply_via_api(self, fake_server: str) -> None:
+        from slack_cached.fake_slack import FakeSlackHandler
+
+        keys = list(FakeSlackHandler.workspace.threads.keys())
+        ch, thread_ts = keys[0]
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": ch, "text": "a reply", "thread_ts": thread_ts},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["message"]["thread_ts"] == thread_ts
+        assert data["message"]["parent_user_id"] is not None
+
+    def test_post_reply_to_nonexistent_thread(self, fake_server: str) -> None:
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": "C0001", "text": "ghost", "thread_ts": "9999999999.000000"},
+            timeout=5,
+        )
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "thread_not_found"
+
+    def test_post_without_channel_returns_error(self, fake_server: str) -> None:
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"text": "no channel"},
+            timeout=5,
+        )
+        assert resp.status_code == 400
+
+    def test_post_without_text_returns_error(self, fake_server: str) -> None:
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": "C0001"},
+            timeout=5,
+        )
+        assert resp.status_code == 400
+
+    def test_post_message_with_custom_user(self, fake_server: str) -> None:
+        resp = requests.post(
+            f"{fake_server}/api/chat.postMessage",
+            data={"channel": "C0001", "text": "bot says hi", "user": "U0099"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"]["user"] == "U0099"
+
+    def test_post_message_directly_on_workspace(self) -> None:
+        ws = Workspace(seed=42)
+        result = ws.post_message(channel="C0001", text="direct post")
+        assert result["ok"] is True
+        key = (result["channel"], result["ts"])
+        assert key in ws.threads
+        assert ws.threads[key][0]["text"] == "direct post"
+
+    def test_post_reply_directly_on_workspace(self) -> None:
+        ws = Workspace(seed=42)
+        key = list(ws.threads.keys())[0]
+        ch, thread_ts = key
+        before = len(ws.threads[key])
+        result = ws.post_message(channel=ch, text="direct reply", thread_ts=thread_ts)
+        assert result["ok"] is True
+        assert len(ws.threads[key]) == before + 1
