@@ -79,15 +79,26 @@ slack-cached show --json https://acme.slack.com/archives/C0123ABCDEF/p1700000000
 Fetch all top-level messages in a channel via `conversations.history`:
 
 ```bash
-slack-cached fetch-channel-messages --channel C0123ABCDEF
+slack-cached fetch --channel C0123ABCDEF
 ```
 
 Add `--full-threads` to also fetch every reply thread for messages that have
 replies:
 
 ```bash
-slack-cached fetch-channel-messages --channel C0123ABCDEF --full-threads
+slack-cached fetch --channel C0123ABCDEF --full-threads
 ```
+
+### Polling channels
+
+Poll multiple channels continuously for new messages:
+
+```bash
+slack-cached poll --channels C001,C002,C003 --interval 5m --last 5m
+```
+
+Add `--full-threads` to expand threads, and `--json` to get per-cycle JSON
+summaries on stdout. Stops gracefully with `Ctrl+C`.
 
 ### Users and channels
 

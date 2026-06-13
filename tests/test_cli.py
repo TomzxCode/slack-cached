@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -503,3 +504,244 @@ def test_show_channel_with_name(
 
     out = capsys.readouterr().out
     assert "general" in out
+
+
+class FakePollClient:
+    """Stub client for poll tests that tracks calls per channel."""
+
+    def __init__(self, messages_by_channel=None):
+        self._messages = messages_by_channel or {}
+        self.calls: list[tuple[str, str | None]] = []
+
+    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+        self.calls.append((channel, oldest))
+        yield from self._messages.get(channel, [])
+
+    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        return iter([])
+
+
+def test_poll_single_cycle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll runs one cycle then stops on KeyboardInterrupt."""
+    db_path = tmp_path / "cache.db"
+    client = FakePollClient(
+        messages_by_channel={
+            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
+            "C2": [{"ts": "1700000000.000200", "user": "U2", "text": "world"}],
+        }
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    cycle_count = 0
+    original_sleep = time.sleep
+
+    def fake_sleep(seconds):
+        nonlocal cycle_count
+        cycle_count += 1
+        if cycle_count >= 1:
+            raise KeyboardInterrupt()
+        original_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "C1,C2",
+            "--interval",
+            "5m",
+            "--last",
+            "5m",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+    assert len(client.calls) == 2
+    channels_seen = {c for c, _ in client.calls}
+    assert channels_seen == {"C1", "C2"}
+
+    err = capsys.readouterr().err
+    assert "polling 2 channel(s)" in err
+    assert "cycle 1:" in err
+    assert "poll stopped after 1 cycle(s)" in err
+
+
+def test_poll_json_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll emits JSON per cycle when --json is passed."""
+    db_path = tmp_path / "cache.db"
+    client = FakePollClient(
+        messages_by_channel={
+            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "msg1"}],
+        }
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    cycle_count = 0
+    original_sleep = time.sleep
+
+    def fake_sleep(seconds):
+        nonlocal cycle_count
+        cycle_count += 1
+        if cycle_count >= 1:
+            raise KeyboardInterrupt()
+        original_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "C1",
+            "--interval",
+            "5m",
+            "--last",
+            "5m",
+            "--json",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    payload = json.loads(out.strip())
+    assert payload["cycle"] == 1
+    assert len(payload["channels"]) == 1
+    assert payload["channels"][0]["channel"] == "C1"
+    assert payload["channels"][0]["fetched"] == 1
+
+
+def test_poll_multiple_cycles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll runs multiple cycles before stopping."""
+    db_path = tmp_path / "cache.db"
+    client = FakePollClient(
+        messages_by_channel={
+            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
+        }
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    cycle_count = 0
+    original_sleep = time.sleep
+
+    def fake_sleep(seconds):
+        nonlocal cycle_count
+        cycle_count += 1
+        if cycle_count >= 3:
+            raise KeyboardInterrupt()
+        original_sleep(0)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "C1",
+            "--interval",
+            "1s",
+            "--last",
+            "1m",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+
+    err = capsys.readouterr().err
+    assert "cycle 3:" in err
+    assert "poll stopped after 3 cycle(s)" in err
+
+
+def test_poll_requires_channels(tmp_path: Path) -> None:
+    """Poll exits with error if --channels is empty."""
+    db_path = tmp_path / "cache.db"
+    rc = cli.main(["poll", "--channels", "", "--db", str(db_path)])
+    assert rc == 1
+
+
+def test_poll_rejects_interval_all(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Poll rejects --interval all."""
+    db_path = tmp_path / "cache.db"
+    client = FakePollClient()
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "C1",
+            "--interval",
+            "all",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 1
+
+
+def test_poll_handles_channel_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll continues when one channel fails."""
+    db_path = tmp_path / "cache.db"
+
+    class FlakyClient:
+        def __init__(self):
+            self.ok_channel_fetched = False
+
+        def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+            if channel == "C_BAD":
+                raise RuntimeError("api error")
+            self.ok_channel_fetched = True
+            yield {"ts": "1700000000.000100", "user": "U1", "text": "ok"}
+
+        def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+            return iter([])
+
+    client = FlakyClient()
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    cycle_count = 0
+    original_sleep = time.sleep
+
+    def fake_sleep(seconds):
+        nonlocal cycle_count
+        cycle_count += 1
+        if cycle_count >= 1:
+            raise KeyboardInterrupt()
+        original_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "C_BAD,C_OK",
+            "--interval",
+            "5m",
+            "--last",
+            "5m",
+            "--json",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+    assert client.ok_channel_fetched
+
+    out = capsys.readouterr().out
+    payload = json.loads(out.strip())
+    channels = payload["channels"]
+    assert any("error" in ch for ch in channels)
+    assert any(ch.get("fetched") == 1 for ch in channels)

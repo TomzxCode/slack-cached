@@ -75,6 +75,24 @@ Print cached channels.
 slack-cached show-channels [--json] [--no-fetch]
 ```
 
+### poll
+
+Poll channels in a loop for new messages.
+
+```bash
+slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [--full-threads] [--json]
+```
+
+| Argument | Description |
+|---|---|
+| `--channels CHANNELS` | Comma-separated list of channel IDs (required) |
+| `--interval DURATION` | Time between poll cycles (default: `5m`) |
+| `--last DURATION` | Lookback period per cycle (default: `5m`, use `all` for full history) |
+| `--full-threads` | Also fetch all thread replies for every threaded message |
+| `--json` | Emit per-cycle JSON summaries to stdout |
+
+Polls all channels sequentially each cycle, reusing a single database connection and API client. Stops gracefully on `Ctrl+C`. When `--json` is passed, each cycle emits a JSON line to stdout with the cycle number, elapsed time, and per-channel fetch counts.
+
 ## Duration format
 
 The `--last` flag accepts duration strings:

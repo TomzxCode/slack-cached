@@ -508,6 +508,100 @@ def cmd_show_channels(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_poll(args: argparse.Namespace) -> int:
+    """Poll channels in a loop, fetching new messages each cycle."""
+    from .cache import fetch_channel_messages
+
+    channels = [c.strip() for c in args.channels.split(",") if c.strip()]
+    if not channels:
+        print("error: --channels must contain at least one channel id", file=sys.stderr)
+        return 1
+
+    interval_delta = _parse_duration(args.interval)
+    if interval_delta is None:
+        print("error: --interval must be a finite duration (not 'all')", file=sys.stderr)
+        return 1
+    interval_seconds = interval_delta.total_seconds()
+
+    oldest = _oldest_ts_from_last(args.last)
+
+    client = _build_client(args)
+
+    log.info(
+        "poll_start",
+        channels=channels,
+        interval=args.interval,
+        last=args.last,
+        full_threads=args.full_threads,
+    )
+    print(
+        f"polling {len(channels)} channel(s) every {args.interval} "
+        f"(lookback: {args.last}, full_threads: {args.full_threads})",
+        file=sys.stderr,
+    )
+
+    cycle = 0
+    try:
+        while True:
+            cycle += 1
+            cycle_start = time.perf_counter()
+            oldest = _oldest_ts_from_last(args.last)
+            cycle_summary: list[dict[str, int]] = []
+
+            with _open_db(args) as conn:
+                for channel in channels:
+                    try:
+                        result = fetch_channel_messages(
+                            conn,
+                            client,
+                            channel,
+                            full_threads=args.full_threads,
+                            oldest=oldest,
+                        )
+                        cycle_summary.append(
+                            {
+                                "channel": channel,
+                                "fetched": result.fetched_messages,
+                                "total": result.total_messages,
+                            }
+                        )
+                        log.info(
+                            "poll_channel_done",
+                            cycle=cycle,
+                            channel=channel,
+                            fetched=result.fetched_messages,
+                            total=result.total_messages,
+                        )
+                    except Exception:
+                        log.exception("poll_channel_error", cycle=cycle, channel=channel)
+                        cycle_summary.append({"channel": channel, "error": True})
+
+            elapsed = time.perf_counter() - cycle_start
+            fetched_total = sum(s.get("fetched", 0) for s in cycle_summary)
+            print(
+                f"cycle {cycle}: {fetched_total} new message(s) across "
+                f"{len(channels)} channel(s) in {elapsed:.1f}s",
+                file=sys.stderr,
+            )
+
+            if args.json:
+                payload = {
+                    "cycle": cycle,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "channels": cycle_summary,
+                }
+                sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+
+            sleep_seconds = max(0, interval_seconds - elapsed)
+            log.info("poll_sleep", cycle=cycle, sleep_seconds=sleep_seconds)
+            time.sleep(sleep_seconds)
+    except KeyboardInterrupt:
+        log.info("poll_interrupted", cycles=cycle)
+        print(f"\npoll stopped after {cycle} cycle(s)", file=sys.stderr)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="slack-cached",
@@ -603,6 +697,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Render output as JSON instead of human-readable text.",
     )
     show_channels_cmd.set_defaults(func=cmd_show_channels)
+
+    poll_cmd = sub.add_parser(
+        "poll",
+        help="Poll channels in a loop for new messages.",
+    )
+    _add_db_args(poll_cmd)
+    poll_cmd.add_argument(
+        "--channels",
+        required=True,
+        help="Comma-separated list of channel IDs to poll (e.g. C001,C002,C003).",
+    )
+    poll_cmd.add_argument(
+        "--interval",
+        type=str,
+        default="5m",
+        metavar="DURATION",
+        help="Time between poll cycles (e.g. 5m, 10m, 1h; default: 5m).",
+    )
+    poll_cmd.add_argument(
+        "--last",
+        type=str,
+        default="5m",
+        metavar="DURATION",
+        help="Lookback per cycle (e.g. 5m, 10m, 1h; default: 5m, use 'all' for full history).",
+    )
+    poll_cmd.add_argument(
+        "--full-threads",
+        action="store_true",
+        help="Also fetch all thread replies for every threaded message.",
+    )
+    poll_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit per-cycle JSON summaries to stdout.",
+    )
+    poll_cmd.set_defaults(func=cmd_poll)
 
     return parser
 
