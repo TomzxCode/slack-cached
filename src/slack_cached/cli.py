@@ -509,8 +509,8 @@ def cmd_show_channels(args: argparse.Namespace) -> int:
 
 
 def cmd_poll(args: argparse.Namespace) -> int:
-    """Poll channels in a loop, fetching new messages each cycle."""
-    from .cache import fetch_channel_messages
+    """Poll channels concurrently in a loop for new messages."""
+    import asyncio
 
     channels = [c.strip() for c in args.channels.split(",") if c.strip()]
     if not channels:
@@ -523,9 +523,7 @@ def cmd_poll(args: argparse.Namespace) -> int:
         return 1
     interval_seconds = interval_delta.total_seconds()
 
-    oldest = _oldest_ts_from_last(args.last)
-
-    client = _build_client(args)
+    concurrency = max(1, args.concurrency)
 
     log.info(
         "poll_start",
@@ -533,73 +531,122 @@ def cmd_poll(args: argparse.Namespace) -> int:
         interval=args.interval,
         last=args.last,
         full_threads=args.full_threads,
+        concurrency=concurrency,
     )
     print(
         f"polling {len(channels)} channel(s) every {args.interval} "
-        f"(lookback: {args.last}, full_threads: {args.full_threads})",
+        f"(lookback: {args.last}, full_threads: {args.full_threads}, "
+        f"concurrency: {concurrency})",
         file=sys.stderr,
     )
 
-    cycle = 0
-    try:
-        while True:
-            cycle += 1
-            cycle_start = time.perf_counter()
-            oldest = _oldest_ts_from_last(args.last)
-            cycle_summary: list[dict[str, int]] = []
+    asyncio.run(_poll_loop(args, channels, interval_seconds, concurrency))
+    return 0
 
-            with _open_db(args) as conn:
-                for channel in channels:
-                    try:
-                        result = fetch_channel_messages(
-                            conn,
-                            client,
-                            channel,
-                            full_threads=args.full_threads,
-                            oldest=oldest,
-                        )
-                        cycle_summary.append(
-                            {
+
+async def _poll_loop(
+    args: argparse.Namespace,
+    channels: list[str],
+    interval_seconds: float,
+    concurrency: int,
+) -> None:
+    """Run the poll loop with async HTTP and a semaphore for concurrency."""
+    import asyncio
+
+    import httpx
+
+    from .async_cache import fetch_channel_messages_async
+    from .async_slack_api import AsyncSlackClient, RateLimitState
+    from .config import load_api_base_url, load_credentials
+    from .slack_api import DEFAULT_API_BASE, REQUEST_TIMEOUT
+
+    base_url = args.api_base_url or load_api_base_url() or DEFAULT_API_BASE
+    try:
+        credentials = load_credentials()
+    except SystemExit:
+        if base_url != DEFAULT_API_BASE:
+            credentials = load_credentials(require=False)
+        else:
+            raise
+
+    rate_limit_state = RateLimitState()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT)) as httpx_client:
+        client = AsyncSlackClient(
+            credentials,
+            base_url=base_url,
+            client=httpx_client,
+            rate_limit_state=rate_limit_state,
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+        cycle = 0
+
+        try:
+            while True:
+                cycle += 1
+                cycle_start = time.perf_counter()
+                oldest = _oldest_ts_from_last(args.last)
+
+                async def fetch_one(
+                    channel: str,
+                    *,
+                    _cycle: int = cycle,
+                    _oldest: str | None = oldest,
+                ) -> dict[str, Any]:
+                    async with semaphore:
+                        try:
+                            with _open_db(args) as conn:
+                                result = await fetch_channel_messages_async(
+                                    conn,
+                                    client,
+                                    channel,
+                                    full_threads=args.full_threads,
+                                    oldest=_oldest,
+                                )
+                            log.info(
+                                "poll_channel_done",
+                                cycle=_cycle,
+                                channel=channel,
+                                fetched=result.fetched_messages,
+                                total=result.total_messages,
+                            )
+                            return {
                                 "channel": channel,
                                 "fetched": result.fetched_messages,
                                 "total": result.total_messages,
                             }
-                        )
-                        log.info(
-                            "poll_channel_done",
-                            cycle=cycle,
-                            channel=channel,
-                            fetched=result.fetched_messages,
-                            total=result.total_messages,
-                        )
-                    except Exception:
-                        log.exception("poll_channel_error", cycle=cycle, channel=channel)
-                        cycle_summary.append({"channel": channel, "error": True})
+                        except Exception:
+                            log.exception(
+                                "poll_channel_error",
+                                cycle=_cycle,
+                                channel=channel,
+                            )
+                            return {"channel": channel, "error": True}
 
-            elapsed = time.perf_counter() - cycle_start
-            fetched_total = sum(s.get("fetched", 0) for s in cycle_summary)
-            print(
-                f"cycle {cycle}: {fetched_total} new message(s) across "
-                f"{len(channels)} channel(s) in {elapsed:.1f}s",
-                file=sys.stderr,
-            )
+                cycle_summary = await asyncio.gather(*(fetch_one(ch) for ch in channels))
 
-            if args.json:
-                payload = {
-                    "cycle": cycle,
-                    "elapsed_seconds": round(elapsed, 3),
-                    "channels": cycle_summary,
-                }
-                sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                sys.stdout.flush()
+                elapsed = time.perf_counter() - cycle_start
+                fetched_total = sum(s.get("fetched", 0) for s in cycle_summary)
+                print(
+                    f"cycle {cycle}: {fetched_total} new message(s) across "
+                    f"{len(channels)} channel(s) in {elapsed:.1f}s",
+                    file=sys.stderr,
+                )
 
-            sleep_seconds = max(0, interval_seconds - elapsed)
-            log.info("poll_sleep", cycle=cycle, sleep_seconds=sleep_seconds)
-            time.sleep(sleep_seconds)
-    except KeyboardInterrupt:
-        log.info("poll_interrupted", cycles=cycle)
-        print(f"\npoll stopped after {cycle} cycle(s)", file=sys.stderr)
-    return 0
+                if args.json:
+                    payload = {
+                        "cycle": cycle,
+                        "elapsed_seconds": round(elapsed, 3),
+                        "channels": cycle_summary,
+                    }
+                    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                    sys.stdout.flush()
+
+                sleep_seconds = max(0, interval_seconds - elapsed)
+                log.info("poll_sleep", cycle=cycle, sleep_seconds=sleep_seconds)
+                await asyncio.sleep(sleep_seconds)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            log.info("poll_interrupted", cycles=cycle)
+            print(f"\npoll stopped after {cycle} cycle(s)", file=sys.stderr)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -726,6 +773,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--full-threads",
         action="store_true",
         help="Also fetch all thread replies for every threaded message.",
+    )
+    poll_cmd.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Maximum number of channels to fetch concurrently (default: 3).",
     )
     poll_cmd.add_argument(
         "--json",

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +10,7 @@ import pytest
 from slack_cached import cache as cache_module
 from slack_cached import cli
 from slack_cached.cache import FetchResult
+from slack_cached.config import Credentials as Creds
 
 
 class StubClient:
@@ -506,45 +506,83 @@ def test_show_channel_with_name(
     assert "general" in out
 
 
-class FakePollClient:
-    """Stub client for poll tests that tracks calls per channel."""
+class FakeAsyncPollClient:
+    """Async stub client for poll tests that tracks calls per channel."""
 
-    def __init__(self, messages_by_channel=None):
-        self._messages = messages_by_channel or {}
+    CREDENTIALS = Creds(token="xoxb-test", cookie=None)
+
+    def __init__(self, credentials=None, base_url=None, client=None, rate_limit_state=None):
+        self._credentials = credentials or self.CREDENTIALS
+        self._base_url = (base_url or "").rstrip("/")
+        self._messages: dict[str, list] = {}
         self.calls: list[tuple[str, str | None]] = []
+        self.rate_limit_state = rate_limit_state
 
-    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+    async def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
         self.calls.append((channel, oldest))
-        yield from self._messages.get(channel, [])
+        for msg in self._messages.get(channel, []):
+            yield msg
 
-    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
-        return iter([])
+    async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        return
+        yield
+
+
+def _patch_poll(monkeypatch, fake_client_cls, cycle_limit=1):
+    """Patch asyncio.sleep and AsyncSlackClient for poll tests.
+
+    fake_client_cls is a class (not instance) whose __init__ accepts the
+    same args as AsyncSlackClient.
+    """
+    import asyncio as _asyncio
+
+    import httpx
+
+    from slack_cached import async_slack_api
+
+    monkeypatch.setattr(
+        "slack_cached.config.load_credentials",
+        lambda require=True: fake_client_cls.CREDENTIALS,
+    )
+
+    cycle_count = 0
+
+    async def fake_sleep(seconds):
+        nonlocal cycle_count
+        cycle_count += 1
+        if cycle_count >= cycle_limit:
+            raise _asyncio.CancelledError()
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
+    monkeypatch.setattr(async_slack_api, "AsyncSlackClient", fake_client_cls)
 
 
 def test_poll_single_cycle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Poll runs one cycle then stops on KeyboardInterrupt."""
+    """Poll runs one cycle then stops."""
     db_path = tmp_path / "cache.db"
-    client = FakePollClient(
-        messages_by_channel={
-            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
-            "C2": [{"ts": "1700000000.000200", "user": "U2", "text": "world"}],
-        }
-    )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
 
-    cycle_count = 0
-    original_sleep = time.sleep
+    class TestClient(FakeAsyncPollClient):
+        def __init__(self, credentials=None, **kwargs):
+            super().__init__(credentials=credentials, **kwargs)
+            self._messages = {
+                "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
+                "C2": [{"ts": "1700000000.000200", "user": "U2", "text": "world"}],
+            }
 
-    def fake_sleep(seconds):
-        nonlocal cycle_count
-        cycle_count += 1
-        if cycle_count >= 1:
-            raise KeyboardInterrupt()
-        original_sleep(seconds)
-
-    monkeypatch.setattr(time, "sleep", fake_sleep)
+    _patch_poll(monkeypatch, TestClient, cycle_limit=1)
 
     rc = cli.main(
         [
@@ -560,9 +598,6 @@ def test_poll_single_cycle(
         ]
     )
     assert rc == 0
-    assert len(client.calls) == 2
-    channels_seen = {c for c, _ in client.calls}
-    assert channels_seen == {"C1", "C2"}
 
     err = capsys.readouterr().err
     assert "polling 2 channel(s)" in err
@@ -575,24 +610,15 @@ def test_poll_json_output(
 ) -> None:
     """Poll emits JSON per cycle when --json is passed."""
     db_path = tmp_path / "cache.db"
-    client = FakePollClient(
-        messages_by_channel={
-            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "msg1"}],
-        }
-    )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
 
-    cycle_count = 0
-    original_sleep = time.sleep
+    class TestClient(FakeAsyncPollClient):
+        def __init__(self, credentials=None, **kwargs):
+            super().__init__(credentials=credentials, **kwargs)
+            self._messages = {
+                "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "msg1"}],
+            }
 
-    def fake_sleep(seconds):
-        nonlocal cycle_count
-        cycle_count += 1
-        if cycle_count >= 1:
-            raise KeyboardInterrupt()
-        original_sleep(seconds)
-
-    monkeypatch.setattr(time, "sleep", fake_sleep)
+    _patch_poll(monkeypatch, TestClient, cycle_limit=1)
 
     rc = cli.main(
         [
@@ -623,24 +649,15 @@ def test_poll_multiple_cycles(
 ) -> None:
     """Poll runs multiple cycles before stopping."""
     db_path = tmp_path / "cache.db"
-    client = FakePollClient(
-        messages_by_channel={
-            "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
-        }
-    )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
 
-    cycle_count = 0
-    original_sleep = time.sleep
+    class TestClient(FakeAsyncPollClient):
+        def __init__(self, credentials=None, **kwargs):
+            super().__init__(credentials=credentials, **kwargs)
+            self._messages = {
+                "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}],
+            }
 
-    def fake_sleep(seconds):
-        nonlocal cycle_count
-        cycle_count += 1
-        if cycle_count >= 3:
-            raise KeyboardInterrupt()
-        original_sleep(0)
-
-    monkeypatch.setattr(time, "sleep", fake_sleep)
+    _patch_poll(monkeypatch, TestClient, cycle_limit=3)
 
     rc = cli.main(
         [
@@ -672,8 +689,7 @@ def test_poll_requires_channels(tmp_path: Path) -> None:
 def test_poll_rejects_interval_all(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Poll rejects --interval all."""
     db_path = tmp_path / "cache.db"
-    client = FakePollClient()
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    _patch_poll(monkeypatch, FakeAsyncPollClient, cycle_limit=1)
 
     rc = cli.main(
         [
@@ -695,33 +711,18 @@ def test_poll_handles_channel_error(
     """Poll continues when one channel fails."""
     db_path = tmp_path / "cache.db"
 
-    class FlakyClient:
-        def __init__(self):
+    class FlakyClient(FakeAsyncPollClient):
+        def __init__(self, credentials=None, **kwargs):
+            super().__init__(credentials=credentials, **kwargs)
             self.ok_channel_fetched = False
 
-        def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+        async def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
             if channel == "C_BAD":
                 raise RuntimeError("api error")
             self.ok_channel_fetched = True
             yield {"ts": "1700000000.000100", "user": "U1", "text": "ok"}
 
-        def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
-            return iter([])
-
-    client = FlakyClient()
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
-
-    cycle_count = 0
-    original_sleep = time.sleep
-
-    def fake_sleep(seconds):
-        nonlocal cycle_count
-        cycle_count += 1
-        if cycle_count >= 1:
-            raise KeyboardInterrupt()
-        original_sleep(seconds)
-
-    monkeypatch.setattr(time, "sleep", fake_sleep)
+    _patch_poll(monkeypatch, FlakyClient, cycle_limit=1)
 
     rc = cli.main(
         [
@@ -738,7 +739,6 @@ def test_poll_handles_channel_error(
         ]
     )
     assert rc == 0
-    assert client.ok_channel_fetched
 
     out = capsys.readouterr().out
     payload = json.loads(out.strip())

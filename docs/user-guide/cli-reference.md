@@ -77,10 +77,10 @@ slack-cached show-channels [--json] [--no-fetch]
 
 ### poll
 
-Poll channels in a loop for new messages.
+Poll channels concurrently in a loop for new messages.
 
 ```bash
-slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [--full-threads] [--json]
+slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [--full-threads] [--concurrency N] [--json]
 ```
 
 | Argument | Description |
@@ -89,9 +89,16 @@ slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [-
 | `--interval DURATION` | Time between poll cycles (default: `5m`) |
 | `--last DURATION` | Lookback period per cycle (default: `5m`, use `all` for full history) |
 | `--full-threads` | Also fetch all thread replies for every threaded message |
+| `--concurrency N` | Maximum number of channels fetched concurrently (default: `3`) |
 | `--json` | Emit per-cycle JSON summaries to stdout |
 
-Polls all channels sequentially each cycle, reusing a single database connection and API client. Stops gracefully on `Ctrl+C`. When `--json` is passed, each cycle emits a JSON line to stdout with the cycle number, elapsed time, and per-channel fetch counts.
+Uses `httpx.AsyncClient` for non-blocking concurrent HTTP requests. An
+`asyncio.Semaphore` caps concurrent in-flight requests to avoid overwhelming
+Slack's rate limit. The client also reads `X-RateLimit-Remaining` headers from
+every response and proactively waits for the rate limit window to reset when
+nearly exhausted.
+
+Stops gracefully on `Ctrl+C`.
 
 ## Duration format
 

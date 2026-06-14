@@ -1425,6 +1425,7 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
                 if "=" in pair:
                     k, v = pair.split("=", 1)
                     from urllib.parse import unquote_plus
+
                     params[k] = unquote_plus(v)
         if not params:
             params = {k: v[0] for k, v in parse_qs(parsed.query).items()}

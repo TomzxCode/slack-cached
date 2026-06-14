@@ -91,14 +91,16 @@ slack-cached fetch --channel C0123ABCDEF --full-threads
 
 ### Polling channels
 
-Poll multiple channels continuously for new messages:
+Poll multiple channels concurrently for new messages:
 
 ```bash
-slack-cached poll --channels C001,C002,C003 --interval 5m --last 5m
+slack-cached poll --channels C001,C002,C003 --interval 5m --last 5m --concurrency 3
 ```
 
-Add `--full-threads` to expand threads, and `--json` to get per-cycle JSON
-summaries on stdout. Stops gracefully with `Ctrl+C`.
+Uses `httpx.AsyncClient` with an `asyncio.Semaphore` for concurrent, non-blocking
+HTTP requests. Reads `X-RateLimit-Remaining` headers to proactively throttle
+before hitting 429s. Add `--full-threads` to expand threads, and `--json` to get
+per-cycle JSON summaries on stdout. Stops gracefully with `Ctrl+C`.
 
 ### Users and channels
 
