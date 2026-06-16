@@ -85,7 +85,7 @@ slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [-
 
 | Argument | Description |
 |---|---|
-| `--channels CHANNELS` | Comma-separated list of channel IDs (required) |
+| `--channels CHANNELS` | Comma-separated list of channels (required). Each entry may be a channel id (`C001`), a bare name (`general`), or a `#`-prefixed name (`#general`). Names are resolved against the cached channels. |
 | `--interval DURATION` | Time between poll cycles (default: `5m`) |
 | `--last DURATION` | Lookback period per cycle (default: `5m`, use `all` for full history) |
 | `--full-threads` | Also fetch all thread replies for every threaded message |

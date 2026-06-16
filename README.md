@@ -94,7 +94,7 @@ slack-cached fetch --channel C0123ABCDEF --full-threads
 Poll multiple channels concurrently for new messages:
 
 ```bash
-slack-cached poll --channels C001,C002,C003 --interval 5m --last 5m --concurrency 3
+slack-cached poll --channels C001,#general,random --interval 5m --last 5m --concurrency 3
 ```
 
 Uses `httpx.AsyncClient` with an `asyncio.Semaphore` for concurrent, non-blocking

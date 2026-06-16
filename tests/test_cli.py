@@ -686,6 +686,86 @@ def test_poll_requires_channels(tmp_path: Path) -> None:
     assert rc == 1
 
 
+def test_poll_resolves_channel_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll resolves bare and '#'-prefixed names via the cached channels."""
+    db_path = tmp_path / "cache.db"
+
+    class ChannelsClient:
+        def iter_channels(self, types="public_channel", limit=1000):
+            yield {"id": "C1", "name": "general", "is_private": False}
+            yield {"id": "C2", "name": "random", "is_private": False}
+
+    monkeypatch.setattr(cli, "_build_client", lambda _: ChannelsClient())
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()  # clear seeding output
+
+    class TestClient(FakeAsyncPollClient):
+        def __init__(self, credentials=None, **kwargs):
+            super().__init__(credentials=credentials, **kwargs)
+            self._messages = {
+                "C1": [{"ts": "1700000000.000100", "user": "U1", "text": "hi"}],
+                "C2": [{"ts": "1700000000.000200", "user": "U2", "text": "yo"}],
+                "C3": [{"ts": "1700000000.000300", "user": "U3", "text": "hey"}],
+            }
+
+    _patch_poll(monkeypatch, TestClient, cycle_limit=1)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "#general,random,C3",
+            "--interval",
+            "5m",
+            "--last",
+            "5m",
+            "--json",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out.strip())
+    polled = sorted(ch["channel"] for ch in payload["channels"])
+    assert polled == ["C1", "C2", "C3"]
+
+
+def test_poll_unresolved_channel_name_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Poll errors out when a channel name cannot be resolved."""
+    db_path = tmp_path / "cache.db"
+
+    class EmptyClient:
+        def iter_channels(self, types="public_channel", limit=1000):
+            return
+            yield
+
+    monkeypatch.setattr(cli, "_build_client", lambda _: EmptyClient())
+    _patch_poll(monkeypatch, FakeAsyncPollClient, cycle_limit=1)
+
+    rc = cli.main(
+        [
+            "poll",
+            "--channels",
+            "#nope",
+            "--interval",
+            "5m",
+            "--last",
+            "5m",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "could not resolve" in err
+    assert "nope" in err
+
+
 def test_poll_rejects_interval_all(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Poll rejects --interval all."""
     db_path = tmp_path / "cache.db"

@@ -508,13 +508,82 @@ def cmd_show_channels(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_channel_id(token: str) -> bool:
+    """Heuristic: decide whether a token is a channel id rather than a name.
+
+    Slack channel names are always lowercase (letters, digits, hyphens,
+    underscores), so any token containing an uppercase letter is treated as an
+    id. A token with no cased letters at all (e.g. a numeric id) is also
+    treated as an id. Everything else is treated as a name.
+    """
+    has_upper = any(c.isupper() for c in token)
+    has_lower = any(c.islower() for c in token)
+    return has_upper or not has_lower
+
+
+def _channel_name_index(conn: sqlite3.Connection) -> dict[str, str]:
+    """Return a {name: id} map of cached channels."""
+    return {ch.name: ch.id for ch in load_channels(conn) if ch.name}
+
+
+def _resolve_poll_channels(args: argparse.Namespace, raw: str) -> list[str] | None:
+    """Resolve a comma-separated --channels value to channel ids.
+
+    Each entry may be a channel id (e.g. C0123456), a bare name (e.g. general),
+    or a '#'-prefixed name (e.g. #general). Names are resolved against the
+    cached channels; when a name is missing from the cache the channels are
+    fetched from Slack once and resolution is retried. Returns None and prints
+    an error when a name cannot be resolved.
+    """
+    entries = [e.strip().lstrip("#").strip() for e in raw.split(",")]
+    entries = [e for e in entries if e]
+    if not entries:
+        print("error: --channels must contain at least one channel", file=sys.stderr)
+        return None
+
+    resolved: list[str] = []
+    names = [e for e in entries if not _is_channel_id(e)]
+    for entry in entries:
+        if _is_channel_id(entry):
+            resolved.append(entry)
+
+    if not names:
+        return resolved
+
+    from .cache import fetch_channels
+
+    with _open_db(args) as conn:
+        name_to_id = _channel_name_index(conn)
+        if any(n not in name_to_id for n in names):
+            client = _build_client(args)
+            fetch_channels(conn, client)
+            name_to_id = _channel_name_index(conn)
+
+        unresolved: list[str] = []
+        for name in names:
+            channel_id = name_to_id.get(name)
+            if channel_id is None:
+                unresolved.append(name)
+            else:
+                resolved.append(channel_id)
+
+    if unresolved:
+        joined = ", ".join(unresolved)
+        print(
+            f"error: could not resolve channel name(s): {joined} "
+            "(run 'slack-cached fetch-channels' or check the spelling)",
+            file=sys.stderr,
+        )
+        return None
+    return resolved
+
+
 def cmd_poll(args: argparse.Namespace) -> int:
     """Poll channels concurrently in a loop for new messages."""
     import asyncio
 
-    channels = [c.strip() for c in args.channels.split(",") if c.strip()]
+    channels = _resolve_poll_channels(args, args.channels)
     if not channels:
-        print("error: --channels must contain at least one channel id", file=sys.stderr)
         return 1
 
     interval_delta = _parse_duration(args.interval)
@@ -753,7 +822,10 @@ def _build_parser() -> argparse.ArgumentParser:
     poll_cmd.add_argument(
         "--channels",
         required=True,
-        help="Comma-separated list of channel IDs to poll (e.g. C001,C002,C003).",
+        help="Comma-separated list of channels to poll. Each entry may be a "
+        "channel id (e.g. C001), a bare name (e.g. general), or a "
+        "'#'-prefixed name (e.g. #general). Names are resolved against the "
+        "cached channels (e.g. C001,general,#random).",
     )
     poll_cmd.add_argument(
         "--interval",
