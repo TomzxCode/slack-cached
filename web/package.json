@@ -1,0 +1,34 @@
+{
+  "name": "slack-watcher-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "dev:all": "concurrently --kill-others --names fake-slack,fake-llm,watcher,vite --prefix-colors cyan,magenta,green,blue \"npm:dev:fake-slack\" \"npm:dev:fake-llm\" \"npm:dev:watcher\" \"npm:dev\"",
+    "dev:fakes": "concurrently --kill-others --names fake-slack,fake-llm --prefix-colors cyan,magenta \"npm:dev:fake-slack\" \"npm:dev:fake-llm\"",
+    "dev:watcher": "SLACK_TOKEN=xoxb-dev SLACK_API_BASE_URL=http://${SLACK_HOST:-${DEV_HOST:-127.0.0.1}}:${SLACK_PORT:-8199}/api ../.venv/bin/slack-watcher --host ${WATCHER_HOST:-${DEV_HOST:-127.0.0.1}} --port ${WATCHER_PORT:-8233}",
+    "dev:fake-slack": "../.venv/bin/slack-fake-server --host ${SLACK_HOST:-${DEV_HOST:-127.0.0.1}} --port ${SLACK_PORT:-8199} --seed 42 --num-users 20 --num-channels 8 --num-threads 25 --epoch-base now",
+    "dev:fake-llm": "../.venv/bin/slack-fake-openai --host ${LLM_HOST:-${DEV_HOST:-127.0.0.1}} --port ${LLM_PORT:-8240} --mode echo",
+    "dev:fake-llm:fail": "../.venv/bin/slack-fake-openai --host ${LLM_HOST:-${DEV_HOST:-127.0.0.1}} --port ${LLM_PORT:-8240} --mode fail --response \"forced failure for testing\"",
+    "dev:fake-llm:reverse": "../.venv/bin/slack-fake-openai --host ${LLM_HOST:-${DEV_HOST:-127.0.0.1}} --port ${LLM_PORT:-8240} --mode reverse",
+    "test:e2e-setup": "concurrently --kill-others --names fake-slack,fake-llm,watcher --prefix-colors cyan,magenta,green \"npm:dev:fake-slack\" \"npm:dev:fake-llm\" \"npm:dev:watcher\"",
+    "seed:settings": "curl -s -X PUT http://${WATCHER_HOST:-${DEV_HOST:-127.0.0.1}}:${WATCHER_PORT:-8233}/api/settings -H 'Content-Type: application/json' -d '{\"llm_base_url\":\"http://${LLM_HOST:-${DEV_HOST:-127.0.0.1}}:${LLM_PORT:-8240}/v1\",\"llm_api_key\":\"dev-key\",\"default_model\":\"fake-model\"}' && echo"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-pwa": "^0.21.1"
+  }
+}
+

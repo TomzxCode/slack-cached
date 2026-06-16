@@ -1,7 +1,7 @@
 [project]
 name = "slack-cached"
 version = "0.1.0"
-description = "Cache Slack threads to a local SQLite database."
+description = "Cache Slack threads to a local SQLite database, with an optional watcher SPA that runs LLM prompts against polled threads."
 readme = "README.md"
 authors = [
     { name = "Tom Rochette", email = "tom.rochette@shopify.com" }
@@ -12,11 +12,17 @@ dependencies = [
     "python-dotenv>=1.0",
     "structlog>=24.4",
     "httpx>=0.28.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "jinja2>=3.1",
 ]
 
 [project.scripts]
 slack-cached = "slack_cached.cli:main"
 slack-fake-server = "slack_cached.fake_slack:main"
+slack-watcher = "slack_watcher.cli:main"
+slack-fake-openai = "slack_watcher.fake_llm:main"
 
 [dependency-groups]
 dev = [
