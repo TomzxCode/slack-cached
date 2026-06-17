@@ -9,8 +9,6 @@ local fake server).  Set ``SlackClient(credentials, base_url=...)`` or the
 ``SLACK_API_BASE_URL`` environment variable.
 """
 
-from __future__ import annotations
-
 import time
 from collections.abc import Callable, Iterator
 from typing import Any

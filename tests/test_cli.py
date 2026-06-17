@@ -30,7 +30,7 @@ def _populate_single_message(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> 
         ):
             yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
 
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeClient())
     monkeypatch.setattr(cache_module, "SlackClient", FakeClient, raising=False)
 
     rc = cli.main(
@@ -95,7 +95,7 @@ def test_show_renders_user_name_when_cached(
                 "real_name": "Alice Smith",
             }
 
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeUsers())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeUsers())
     assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
 
     rc = cli.main(
@@ -218,7 +218,7 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
             calls.append(oldest)
             yield {"ts": thread_ts, "user": "U1", "text": "root"}
 
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeClient())
 
     rc = cli.main(
         [
@@ -234,7 +234,7 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 def test_resolve_ref_requires_url_or_channel_ts() -> None:
     with pytest.raises(SystemExit):
-        cli._resolve_ref(None, None, None)
+        cli._internal._refs._resolve_ref(None, None, None)
 
 
 def test_fetch_result_dataclass_fields() -> None:
@@ -259,7 +259,7 @@ def test_fetch_users_then_show(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["fetch-users", "--db", str(db_path)])
     assert rc == 0
@@ -277,7 +277,7 @@ def test_show_users_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-users", "--db", str(db_path), "--json"])
     assert rc == 0
@@ -292,7 +292,7 @@ def test_show_users_jsonl(
 ) -> None:
     """show-users --jsonl emits a single compact JSON line."""
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-users", "--db", str(db_path), "--jsonl"])
     assert rc == 0
@@ -308,7 +308,7 @@ def test_fetch_channels_then_show(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["fetch-channels", "--db", str(db_path)])
     assert rc == 0
@@ -326,7 +326,7 @@ def test_show_channels_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-channels", "--db", str(db_path), "--json"])
     assert rc == 0
@@ -341,7 +341,7 @@ def test_show_channels_jsonl(
 ) -> None:
     """show-channels --jsonl emits a single compact JSON line."""
     db_path = tmp_path / "cache.db"
-    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeListClient())
 
     rc = cli.main(["show-channels", "--db", str(db_path), "--jsonl"])
     assert rc == 0
@@ -384,7 +384,7 @@ def test_fetch_channel_messages_basic(monkeypatch: pytest.MonkeyPatch, tmp_path:
             {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
     assert rc == 0
@@ -423,7 +423,7 @@ def test_fetch_channel_messages_full_threads(
             ],
         },
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(
         [
@@ -460,7 +460,7 @@ def test_fetch_channel_default_last_is_one_day(
     client = FakeChannelClientWithHistory(
         messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
     assert rc == 0
@@ -474,7 +474,7 @@ def test_fetch_channel_last_zero_fetches_all(
     client = FakeChannelClientWithHistory(
         messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["fetch", "--channel", "C1", "--last", "all", "--db", str(db_path)])
     assert rc == 0
@@ -484,18 +484,19 @@ def test_fetch_channel_last_zero_fetches_all(
 def test_parse_duration() -> None:
     from datetime import timedelta
 
-    assert cli._parse_duration("24h") == timedelta(hours=24)
-    assert cli._parse_duration("1d") == timedelta(days=1)
-    assert cli._parse_duration("2d5h30m") == timedelta(days=2, hours=5, minutes=30)
-    assert cli._parse_duration("90m") == timedelta(minutes=90)
-    assert cli._parse_duration("5h23m13s") == timedelta(hours=5, minutes=23, seconds=13)
-    assert cli._parse_duration("all") is None
-    assert cli._parse_duration("ALL") is None
+    parse = cli._internal._duration._parse_duration
+    assert parse("24h") == timedelta(hours=24)
+    assert parse("1d") == timedelta(days=1)
+    assert parse("2d5h30m") == timedelta(days=2, hours=5, minutes=30)
+    assert parse("90m") == timedelta(minutes=90)
+    assert parse("5h23m13s") == timedelta(hours=5, minutes=23, seconds=13)
+    assert parse("all") is None
+    assert parse("ALL") is None
 
     with pytest.raises(ValueError, match="invalid duration"):
-        cli._parse_duration("abc")
+        parse("abc")
     with pytest.raises(ValueError, match="invalid duration"):
-        cli._parse_duration("")
+        parse("")
 
 
 def test_show_channel_without_ts_human(
@@ -508,7 +509,7 @@ def test_show_channel_without_ts_human(
             {"ts": "1700000000.000200", "user": "U2", "text": "world"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["show", "--channel", "C1", "--db", str(db_path)])
     assert rc == 0
@@ -531,7 +532,7 @@ def test_show_channel_without_ts_json(
             {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--json"])
     assert rc == 0
@@ -553,7 +554,7 @@ def test_show_channel_without_ts_jsonl(
             {"ts": "1700000000.000200", "user": "U2", "text": "world"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--jsonl"])
     assert rc == 0
@@ -576,7 +577,7 @@ def test_show_channel_without_ts_uses_cached(
             {"ts": "1700000000.000100", "user": "U1", "text": "cached_msg"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["fetch", "--channel", "C1", "--db", str(db_path)])
     assert rc == 0
@@ -585,7 +586,7 @@ def test_show_channel_without_ts_uses_cached(
         def iter_channel_history(self, *a, **kw):
             raise AssertionError("should not fetch")
 
-    monkeypatch.setattr(cli, "_build_client", lambda args: NoCallClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: NoCallClient())
 
     rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--no-fetch"])
     assert rc == 0
@@ -603,7 +604,7 @@ def test_show_channel_with_name(
             {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["fetch-channels", "--db", str(db_path)])
     assert rc == 0
@@ -659,7 +660,7 @@ def test_search_human_output(
             },
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["search", "hello", "--db", str(db_path)])
     assert rc == 0
@@ -695,7 +696,7 @@ def test_search_json_output(
             },
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["search", "hello", "--json", "--db", str(db_path)])
     assert rc == 0
@@ -732,7 +733,7 @@ def test_search_jsonl_output(
             },
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["search", "hello", "--jsonl", "--db", str(db_path)])
     assert rc == 0
@@ -750,7 +751,7 @@ def test_search_passes_count_sort_flags(monkeypatch: pytest.MonkeyPatch, tmp_pat
     """Search forwards --count, --sort and --sort-dir to the client."""
     db_path = tmp_path / "cache.db"
     client = FakeSearchClient(matches=[])
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(
         [
@@ -788,7 +789,7 @@ def test_search_caches_matches_for_show(
             },
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     assert cli.main(["search", "cached", "--db", str(db_path)]) == 0
     capsys.readouterr()
@@ -823,7 +824,7 @@ def test_search_renders_cached_user_and_channel_names(
         def iter_channels(self, types="public_channel", limit=1000):
             yield {"id": "C1", "name": "general", "is_private": False}
 
-    monkeypatch.setattr(cli, "_build_client", lambda args: SeedClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: SeedClient())
     assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
     assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
     capsys.readouterr()
@@ -838,7 +839,7 @@ def test_search_renders_cached_user_and_channel_names(
             },
         ]
     )
-    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
 
     rc = cli.main(["search", "hello", "--json", "--db", str(db_path)])
     assert rc == 0
@@ -1038,7 +1039,7 @@ def test_poll_resolves_channel_names(
             yield {"id": "C1", "name": "general", "is_private": False}
             yield {"id": "C2", "name": "random", "is_private": False}
 
-    monkeypatch.setattr(cli, "_build_client", lambda _: ChannelsClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: ChannelsClient())
     assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
     capsys.readouterr()  # clear seeding output
 
@@ -1085,7 +1086,7 @@ def test_poll_unresolved_channel_name_errors(
             return
             yield
 
-    monkeypatch.setattr(cli, "_build_client", lambda _: EmptyClient())
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: EmptyClient())
     _patch_poll(monkeypatch, FakeAsyncPollClient, cycle_limit=1)
 
     rc = cli.main(

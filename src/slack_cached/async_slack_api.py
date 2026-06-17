@@ -7,8 +7,6 @@ logic for HTTP 429 and Slack 'ratelimited' errors.
 Additionally captures X-RateLimit-* headers for proactive throttling.
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import time

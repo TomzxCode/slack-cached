@@ -5,8 +5,6 @@ concurrent HTTP requests. SQLite writes remain synchronous since they
 are fast and happen within a single event loop.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from typing import Any
 

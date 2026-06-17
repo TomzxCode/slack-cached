@@ -9,8 +9,6 @@ The cache database lives at $XDG_CACHE_HOME/slack-cached/threads.db
 or ~/.cache/slack-cached/threads.db by default, and can be overridden via --db.
 """
 
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from pathlib import Path

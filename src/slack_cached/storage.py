@@ -36,8 +36,6 @@ Schema:
     PRIMARY KEY (id)
 """
 
-from __future__ import annotations
-
 import json
 import sqlite3
 import time
@@ -45,7 +43,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import structlog
 
@@ -157,14 +155,14 @@ def _log_sql(statement: str, duration_s: float) -> None:
 class _LoggingCursor(sqlite3.Cursor):
     """Cursor that logs each executed statement with its duration."""
 
-    def execute(self, sql: str, parameters: Any = (), /) -> _LoggingCursor:
+    def execute(self, sql: str, parameters: Any = (), /) -> Self:
         start = time.perf_counter()
         try:
             return super().execute(sql, parameters)
         finally:
             _log_sql(sql, time.perf_counter() - start)
 
-    def executemany(self, sql: str, seq_of_parameters: Any, /) -> _LoggingCursor:
+    def executemany(self, sql: str, seq_of_parameters: Any, /) -> Self:
         start = time.perf_counter()
         try:
             return super().executemany(sql, seq_of_parameters)

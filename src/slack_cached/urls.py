@@ -13,8 +13,6 @@ We return the thread root ts in that case so that consumers can fetch the entire
 thread via conversations.replies.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
