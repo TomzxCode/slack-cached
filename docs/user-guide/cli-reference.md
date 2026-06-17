@@ -43,6 +43,26 @@ slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json] [--no-fetch] [--l
 | `--no-fetch` | Do not auto-fetch if not cached |
 | `--last DURATION` | Lookback period for channel display (default: `1d`) |
 
+### search
+
+Search Slack via `search.messages` and cache every matched message/thread.
+
+```bash
+slack-cached search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|desc] [--full-threads] [--json]
+```
+
+| Argument | Description |
+|---|---|
+| `QUERY` | Slack search query (same syntax as the Slack search box, required) |
+| `--count N` | Maximum results per page (default: `20`) |
+| `--sort` | Sort by `score` or `timestamp` (default: `timestamp`) |
+| `--sort-dir` | Sort direction, `asc` or `desc` (default: `desc`) |
+| `--full-threads` | Also fetch all replies for every thread a match belongs to |
+| `--json` | Output as JSON |
+
+Search is always a live API call. Every matched message is cached under its
+`(channel, thread_ts)` so it can be revisited later with `show`.
+
 ### fetch-users
 
 Cache all workspace users.

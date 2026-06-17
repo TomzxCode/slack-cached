@@ -23,6 +23,7 @@ from .config import Credentials
 DEFAULT_API_BASE = "https://slack.com/api"
 DEFAULT_LIMIT = 200
 DEFAULT_LIST_LIMIT = 1000
+DEFAULT_SEARCH_COUNT = 20
 DEFAULT_CHANNEL_TYPES = "public_channel,private_channel,mpim,im"
 MAX_RETRIES = 5
 REQUEST_TIMEOUT = 30
@@ -52,6 +53,7 @@ class SlackClient:
         self._replies_url = f"{self._base_url}/conversations.replies"
         self._users_list_url = f"{self._base_url}/users.list"
         self._conversations_list_url = f"{self._base_url}/conversations.list"
+        self._search_messages_url = f"{self._base_url}/search.messages"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._credentials.token}"}
@@ -228,3 +230,41 @@ class SlackClient:
             "channels",
             {"limit": limit, "types": types},
         )
+
+    def iter_search_messages(
+        self,
+        query: str,
+        count: int = DEFAULT_SEARCH_COUNT,
+        sort: str = "timestamp",
+        sort_dir: str = "desc",
+    ) -> Iterator[dict[str, Any]]:
+        """Yield messages matching *query* via search.messages.
+
+        Slack search uses page-based pagination (page N of page_count), unlike
+        the cursor-based pagination used by list endpoints. Each match carries
+        its own ``channel``, ``ts`` and ``permalink`` so callers can route it
+        back into the per-thread cache.
+        """
+        page = 1
+        seen_pages: set[int] = set()
+        while True:
+            if page in seen_pages:
+                return
+            seen_pages.add(page)
+            params: dict[str, Any] = {
+                "query": query,
+                "count": count,
+                "page": page,
+                "sort": sort,
+                "sort_dir": sort_dir,
+            }
+            data = self._get(self._search_messages_url, params)
+            block = data.get("messages") or {}
+            matches = block.get("matches", [])
+            page += 1
+            yield from matches
+
+            pagination = block.get("pagination") or {}
+            page_count = int(pagination.get("page_count", 0) or 0)
+            if not matches or page > page_count:
+                return

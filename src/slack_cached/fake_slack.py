@@ -10,6 +10,7 @@ Exposes Slack Web API endpoints under ``/api/``:
     GET /api/conversations.replies
     GET /api/conversations.history
     GET /api/users.list
+    GET /api/search.messages
 
 All data is deterministically generated from a seed so the same seed always
 produces the same workspace.  Cursor-based pagination is fully supported.
@@ -62,6 +63,7 @@ ENDPOINT_RATE_LIMITS: dict[str, int] = {
     "conversations.history": 50,
     "users.list": 20,
     "conversations.list": 20,
+    "search.messages": 20,
 }
 
 RATE_LIMIT_WINDOW = 60.0
@@ -1327,6 +1329,54 @@ class Workspace:
         next_cursor = _encode_cursor(next_offset) if has_more else None
         return page, has_more, next_cursor
 
+    def search_messages(
+        self,
+        query: str,
+        count: int,
+        page: int,
+        sort: str,
+        sort_dir: str,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Return (page_matches, total_count, page_count) for a text search.
+
+        The search is a simple case-insensitive AND of the whitespace-separated
+        query terms against message text.  Each match is enriched with its
+        ``channel`` and a ``permalink`` so it looks like a real
+        ``search.messages`` response.
+        """
+        terms = [t.lower() for t in query.split() if t]
+        channel_names = {c["id"]: c["name"] for c in self.channels}
+
+        matches: list[dict[str, Any]] = []
+        for (channel, _thread_ts), messages in self.threads.items():
+            ch_name = channel_names.get(channel, channel)
+            for msg in messages:
+                text = (msg.get("text") or "").lower()
+                if terms and not all(term in text for term in terms):
+                    continue
+                match = dict(msg)
+                match["channel"] = channel
+                match["channel_previous"] = {"name": ch_name, "id": channel}
+                match["channel_is_prev"] = False
+                match["permalink"] = (
+                    f"https://acme.slack.com/archives/{channel}/"
+                    f"p{msg['ts'].replace('.', '').ljust(16, '0')}"
+                )
+                matches.append(match)
+
+        reverse = sort_dir == "desc"
+        if sort == "timestamp":
+            matches.sort(key=lambda m: float(m["ts"]), reverse=reverse)
+        else:
+            matches.sort(key=lambda m: float(m["ts"]), reverse=True)
+
+        total = len(matches)
+        page_count = max(1, (total + count - 1) // count) if count > 0 else 1
+        effective_page = max(1, page)
+        start = (effective_page - 1) * count
+        end = start + count
+        return matches[start:end], total, page_count
+
     def post_message(
         self,
         channel: str,
@@ -1405,6 +1455,7 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
             "/api/conversations.history": self._handle_conversations_history,
             "/api/users.list": self._handle_users_list,
             "/api/conversations.list": self._handle_conversations_list,
+            "/api/search.messages": self._handle_search_messages,
         }
 
         handler = routes.get(path)
@@ -1529,6 +1580,36 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
         else:
             response["response_metadata"] = {"next_cursor": ""}
 
+        self._send_json(response)
+
+    def _handle_search_messages(self, params: dict[str, str]) -> None:
+        query = params.get("query", "")
+        count = max(1, int(params.get("count", "20")))
+        page = max(1, int(params.get("page", "1")))
+        sort = params.get("sort", "timestamp")
+        sort_dir = params.get("sort_dir", "desc")
+
+        page_matches, total, page_count = self.workspace.search_messages(
+            query, count, page, sort, sort_dir
+        )
+        first = (page - 1) * count + 1 if total else 0
+        last = first + len(page_matches) - 1 if page_matches else 0
+        response: dict[str, Any] = {
+            "ok": True,
+            "query": query,
+            "messages": {
+                "total": total,
+                "pagination": {
+                    "total_count": total,
+                    "page": page,
+                    "per_page": count,
+                    "page_count": page_count,
+                    "first": first,
+                    "last": last,
+                },
+                "matches": page_matches,
+            },
+        }
         self._send_json(response)
 
     def _handle_chat_post_message(self, params: dict[str, str]) -> None:

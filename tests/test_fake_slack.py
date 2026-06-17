@@ -497,6 +497,108 @@ class TestConversationsHistory:
 
 
 # ---------------------------------------------------------------------------
+# search.messages endpoint
+# ---------------------------------------------------------------------------
+
+
+def _all_texts(ws: Workspace) -> list[str]:
+    return [(m.get("text") or "") for msgs in ws.threads.values() for m in msgs]
+
+
+class TestSearchMessages:
+    def _known_term(self) -> str:
+        ws = Workspace(seed=42)
+        # Pick a real lowercase word that appears in the generated workspace.
+        for text in _all_texts(ws):
+            for tok in text.split():
+                tok = tok.strip(".,!?:;\"'()-")
+                if len(tok) >= 5 and tok.isalpha():
+                    return tok.lower()
+        pytest.skip("no searchable token in workspace")
+
+    def test_returns_matches_with_required_fields(self, fake_server: str) -> None:
+        term = self._known_term()
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        assert data["ok"] is True
+        assert data["query"] == term
+        messages_block = data["messages"]
+        assert messages_block["total"] >= 1
+        assert messages_block["pagination"]["page"] == 1
+        assert messages_block["pagination"]["page_count"] >= 1
+        assert len(messages_block["matches"]) >= 1
+        for match in messages_block["matches"]:
+            assert "ts" in match
+            assert "channel" in match
+            assert "permalink" in match
+
+    def test_match_channel_is_real_channel(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        term = self._known_term()
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        channel_ids = {c["id"] for c in ws.channels}
+        for match in data["messages"]["matches"]:
+            assert match["channel"] in channel_ids
+
+    def test_total_count_matches_workspace(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        term = self._known_term()
+        expected = sum(1 for text in _all_texts(ws) if term in text.lower())
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        assert data["messages"]["total"] == expected
+
+    def test_unknown_term_returns_zero_matches(self, fake_server: str) -> None:
+        data = _get(fake_server, "/api/search.messages", {"query": "zzznotaword12345"})
+        assert data["ok"] is True
+        assert data["messages"]["total"] == 0
+        assert data["messages"]["matches"] == []
+        assert data["messages"]["pagination"]["page_count"] == 1
+
+    def test_pagination_splits_matches(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        term = self._known_term()
+        total = sum(1 for text in _all_texts(ws) if term in text.lower())
+        if total < 3:
+            pytest.skip("need at least 3 matches to paginate")
+        page1 = _get(
+            fake_server, "/api/search.messages", {"query": term, "count": "2", "page": "1"}
+        )
+        assert len(page1["messages"]["matches"]) == 2
+        assert page1["messages"]["pagination"]["page_count"] >= 2
+        cursor_page = page1["messages"]["pagination"]["page"]
+        page2 = _get(
+            fake_server,
+            "/api/search.messages",
+            {"query": term, "count": "2", "page": str(cursor_page + 1)},
+        )
+        assert len(page2["messages"]["matches"]) >= 1
+        # Pages should not overlap in ts.
+        ts1 = {m["ts"] for m in page1["messages"]["matches"]}
+        ts2 = {m["ts"] for m in page2["messages"]["matches"]}
+        assert not (ts1 & ts2)
+
+    def test_and_semantics_for_multiple_terms(self, fake_server: str) -> None:
+        ws = Workspace(seed=42)
+        texts = _all_texts(ws)
+        # Find two tokens that co-occur in at least one message.
+        pair = None
+        for text in texts:
+            toks = {
+                t.strip(".,!?:;\"'()-").lower()
+                for t in text.split()
+                if len(t.strip(".,!?:;\"'()-")) >= 4
+            }
+            if len(toks) >= 2:
+                pair = sorted(toks)[:2]
+                break
+        if pair is None:
+            pytest.skip("no two-term message in workspace")
+        data = _get(fake_server, "/api/search.messages", {"query": " ".join(pair)})
+        for match in data["messages"]["matches"]:
+            lowered = (match.get("text") or "").lower()
+            assert all(term in lowered for term in pair)
+
+
+# ---------------------------------------------------------------------------
 # Integration: fetch_channel_messages against fake server
 # ---------------------------------------------------------------------------
 
@@ -579,6 +681,80 @@ class TestFetchChannelMessagesIntegration:
             cached = load_thread(conn, ref)
             assert len(cached) == 1
             assert cached[0].ts == thread_ts
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Integration: fetch_search against fake server
+# ---------------------------------------------------------------------------
+
+
+class TestFetchSearchIntegration:
+    @pytest.fixture()
+    def workspace(self) -> Workspace:
+        return Workspace(seed=42)
+
+    def _known_term(self, ws: Workspace) -> str:
+        for msgs in ws.threads.values():
+            for m in msgs:
+                for tok in (m.get("text") or "").split():
+                    tok = tok.strip(".,!?:;\"'()-")
+                    if len(tok) >= 5 and tok.isalpha():
+                        return tok.lower()
+        pytest.skip("no searchable token in workspace")
+
+    def test_fetch_search_caches_matches(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        from slack_cached.cache import fetch_search
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect
+
+        term = self._known_term(workspace)
+        client = SlackClient(
+            Credentials(token="xoxb-fake", cookie=None),
+            base_url=f"{fake_server}/api",
+        )
+        conn = connect(tmp_path / "cache.db")
+        try:
+            result = fetch_search(conn, client, query=term)
+            assert len(result.matches) >= 1
+            assert result.threads_touched >= 1
+            for match in result.matches:
+                assert match.get("channel")
+                assert match.get("permalink")
+        finally:
+            conn.close()
+
+    def test_fetch_search_full_threads_then_show(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        from slack_cached.cache import fetch_search
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect, load_thread_messages
+
+        term = self._known_term(workspace)
+        client = SlackClient(
+            Credentials(token="xoxb-fake", cookie=None),
+            base_url=f"{fake_server}/api",
+        )
+        conn = connect(tmp_path / "cache.db")
+        try:
+            result = fetch_search(conn, client, query=term, full_threads=True)
+            # At least one matched thread should now have more than the single
+            # search match cached (i.e. its replies were expanded).
+            expanded = False
+            for match in result.matches:
+                channel = match["channel"]
+                thread_ts = match.get("thread_ts") or match["ts"]
+                cached = load_thread_messages(conn, channel, thread_ts)
+                if len(cached) > 1:
+                    expanded = True
+                    break
+            assert expanded
         finally:
             conn.close()
 

@@ -135,3 +135,110 @@ def test_iter_channel_history_stops_without_has_more() -> None:
 
     assert len(msgs) == 1
     assert len(session.calls) == 1
+
+
+def test_iter_search_messages_paginates_by_page() -> None:
+    session = FakeSession(
+        [
+            {
+                "ok": True,
+                "messages": {
+                    "total": 3,
+                    "pagination": {
+                        "total_count": 3,
+                        "page": 1,
+                        "per_page": 2,
+                        "page_count": 2,
+                        "first": 1,
+                        "last": 2,
+                    },
+                    "matches": [
+                        {"ts": "1.0", "channel": "C1", "text": "a"},
+                        {"ts": "2.0", "channel": "C1", "text": "b"},
+                    ],
+                },
+            },
+            {
+                "ok": True,
+                "messages": {
+                    "total": 3,
+                    "pagination": {
+                        "total_count": 3,
+                        "page": 2,
+                        "per_page": 2,
+                        "page_count": 2,
+                        "first": 3,
+                        "last": 3,
+                    },
+                    "matches": [
+                        {"ts": "3.0", "channel": "C2", "text": "c"},
+                    ],
+                },
+            },
+        ]
+    )
+    client = _client(session)
+
+    msgs = list(client.iter_search_messages(query="hello", count=2))
+
+    assert [m["ts"] for m in msgs] == ["1.0", "2.0", "3.0"]
+    assert len(session.calls) == 2
+    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/search.messages"
+    assert session.calls[0]["params"]["query"] == "hello"
+    assert session.calls[0]["params"]["page"] == 1
+    assert session.calls[0]["params"]["count"] == 2
+    assert session.calls[1]["params"]["page"] == 2
+
+
+def test_iter_search_messages_stops_on_single_page() -> None:
+    session = FakeSession(
+        [
+            {
+                "ok": True,
+                "messages": {
+                    "total": 1,
+                    "pagination": {
+                        "total_count": 1,
+                        "page": 1,
+                        "per_page": 20,
+                        "page_count": 1,
+                        "first": 1,
+                        "last": 1,
+                    },
+                    "matches": [{"ts": "1.0", "channel": "C1", "text": "a"}],
+                },
+            },
+        ]
+    )
+    client = _client(session)
+
+    msgs = list(client.iter_search_messages(query="hello"))
+
+    assert [m["ts"] for m in msgs] == ["1.0"]
+    assert len(session.calls) == 1
+
+
+def test_iter_search_messages_no_matches_returns_empty() -> None:
+    session = FakeSession(
+        [
+            {
+                "ok": True,
+                "messages": {
+                    "total": 0,
+                    "pagination": {
+                        "total_count": 0,
+                        "page": 1,
+                        "per_page": 20,
+                        "page_count": 1,
+                        "first": 0,
+                        "last": 0,
+                    },
+                    "matches": [],
+                },
+            },
+        ]
+    )
+    client = _client(session)
+
+    assert list(client.iter_search_messages(query="nothing")) == []
+    assert len(session.calls) == 1

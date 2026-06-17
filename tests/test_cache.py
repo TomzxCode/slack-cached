@@ -9,6 +9,7 @@ from typing import Any
 from slack_cached.cache import (
     fetch_channel_messages,
     fetch_channels,
+    fetch_search,
     fetch_thread,
     fetch_users,
     load_thread,
@@ -19,6 +20,7 @@ from slack_cached.storage import (
     get_thread_state,
     get_user,
     load_channels,
+    load_thread_messages,
     load_users,
 )
 from slack_cached.urls import ThreadRef
@@ -328,3 +330,130 @@ def test_fetch_channel_messages_standalone_messages_use_own_ts_as_thread_ts(
 
     state = get_thread_state(conn, "C1", "1700000000.000100")
     assert state is not None
+
+
+# ---------------------------------------------------------------------------
+# fetch_search
+# ---------------------------------------------------------------------------
+
+
+class FakeSearchClient:
+    """In-memory stand-in returning fixed search matches and thread replies."""
+
+    def __init__(
+        self,
+        matches: list[dict[str, Any]] | None = None,
+        thread_replies: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self._matches = matches or []
+        self._thread_replies = thread_replies or {}
+        self.search_calls: list[dict[str, Any]] = []
+        self.replies_calls: list[dict[str, Any]] = []
+
+    def iter_search_messages(
+        self,
+        query: str,
+        count: int = 20,
+        sort: str = "timestamp",
+        sort_dir: str = "desc",
+    ) -> Iterator[dict[str, Any]]:
+        self.search_calls.append(
+            {"query": query, "count": count, "sort": sort, "sort_dir": sort_dir}
+        )
+        yield from self._matches
+
+    def iter_thread_replies(
+        self,
+        channel: str,
+        thread_ts: str,
+        oldest: str | None = None,
+        limit: int = 200,
+    ) -> Iterator[dict[str, Any]]:
+        self.replies_calls.append({"channel": channel, "thread_ts": thread_ts, "oldest": oldest})
+        yield from self._thread_replies.get((channel, thread_ts), [])
+
+
+def test_fetch_search_caches_matches_across_threads(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello world",
+                "channel": "C1",
+                "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            },
+            {
+                "ts": "1700000000.000200",
+                "user": "U2",
+                "text": "hello there",
+                "channel": "C2",
+                "permalink": "https://acme.slack.com/archives/C2/p1700000000000200",
+            },
+        ]
+    )
+
+    result = fetch_search(conn, client, query="hello")
+
+    assert len(result.matches) == 2
+    assert result.threads_touched == 2
+    assert client.search_calls[0]["query"] == "hello"
+
+    # First match sits in a real thread, second is a standalone (no thread_ts).
+    msgs_c1 = load_thread_messages(conn, "C1", "1700000000.000100")
+    assert len(msgs_c1) == 1
+    assert msgs_c1[0].text == "hello world"
+    msgs_c2 = load_thread_messages(conn, "C2", "1700000000.000200")
+    assert len(msgs_c2) == 1
+    assert msgs_c2[0].text == "hello there"
+
+    state = get_thread_state(conn, "C2", "1700000000.000200")
+    assert state is not None
+
+
+def test_fetch_search_full_threads_expands_replies(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "parent",
+                "channel": "C1",
+            },
+        ],
+        thread_replies={
+            ("C1", "1700000000.000100"): [
+                {
+                    "ts": "1700000000.000100",
+                    "thread_ts": "1700000000.000100",
+                    "user": "U1",
+                    "text": "parent",
+                },
+                {"ts": "1700000000.000300", "user": "U2", "text": "reply"},
+            ],
+        },
+    )
+
+    result = fetch_search(conn, client, query="parent", full_threads=True)
+
+    assert len(result.matches) == 1
+    assert result.threads_touched == 1
+    assert len(client.replies_calls) == 1
+    assert client.replies_calls[0]["thread_ts"] == "1700000000.000100"
+
+    msgs = load_thread_messages(conn, "C1", "1700000000.000100")
+    assert [m.ts for m in msgs] == ["1700000000.000100", "1700000000.000300"]
+
+
+def test_fetch_search_no_matches_still_returns_empty(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    client = FakeSearchClient(matches=[])
+
+    result = fetch_search(conn, client, query="nothing")
+
+    assert result.matches == []
+    assert result.threads_touched == 0

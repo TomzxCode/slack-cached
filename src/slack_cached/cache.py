@@ -80,6 +80,21 @@ class ChannelFetchResult:
     threads_with_replies_fetched: int
 
 
+@dataclass(frozen=True)
+class SearchFetchResult:
+    """Summary of what `fetch_search` did.
+
+    `matches` is the raw list of search matches (each carrying its own
+    ``channel``, ``ts`` and ``permalink``) so the caller can render them
+    without re-reading the cache. `threads_touched` is the number of distinct
+    threads that received at least one cached message.
+    """
+
+    query: str
+    matches: list[dict[str, Any]]
+    threads_touched: int
+
+
 def fetch_thread(
     conn: sqlite3.Connection,
     client: SlackClient,
@@ -226,6 +241,82 @@ def fetch_channel_messages(
         fetched_messages=written,
         total_messages=total,
         threads_with_replies_fetched=threads_with_replies_fetched,
+    )
+
+
+def fetch_search(
+    conn: sqlite3.Connection,
+    client: SlackClient,
+    query: str,
+    count: int = 20,
+    sort: str = "timestamp",
+    sort_dir: str = "desc",
+    full_threads: bool = False,
+) -> SearchFetchResult:
+    """Search Slack via search.messages and cache every matched message.
+
+    Each match carries its own ``channel`` and ``ts``; it is upserted into the
+    messages table under its ``(channel, thread_ts)`` thread (defaulting the
+    thread ts to the message ts when Slack omits one, matching the channel
+    fetch behaviour).  When *full_threads* is True, every distinct matched
+    thread is then fetched in full via conversations.replies.
+
+    Returns the raw matches so the caller can render them (with permalinks)
+    without re-reading the cache.
+    """
+    log.info(
+        "fetch_search_start",
+        query=query,
+        count=count,
+        sort=sort,
+        sort_dir=sort_dir,
+        full_threads=full_threads,
+    )
+
+    matches: list[dict[str, Any]] = list(
+        client.iter_search_messages(query=query, count=count, sort=sort, sort_dir=sort_dir)
+    )
+    log.info("fetch_search_matches", query=query, matches=len(matches))
+
+    written = 0
+    threads_touched: set[tuple[str, str]] = set()
+
+    with transaction(conn):
+        for msg in matches:
+            channel = msg.get("channel")
+            if not channel or not msg.get("ts"):
+                continue
+            thread_ts = msg.get("thread_ts") or msg["ts"]
+            record_thread_refresh(conn, channel, thread_ts, None)
+            written += upsert_messages(conn, channel, thread_ts, [msg])
+            threads_touched.add((channel, thread_ts))
+
+    if full_threads:
+        log.info(
+            "fetch_search_threads_start",
+            query=query,
+            thread_count=len(threads_touched),
+        )
+        for channel, thread_ts in sorted(threads_touched):
+            replies = list(client.iter_thread_replies(channel=channel, thread_ts=thread_ts))
+            if not replies:
+                continue
+            latest = _latest_ts(replies)
+            with transaction(conn):
+                record_thread_refresh(conn, channel, thread_ts, latest)
+                written += upsert_messages(conn, channel, thread_ts, replies)
+
+    log.info(
+        "fetch_search_done",
+        query=query,
+        matches=len(matches),
+        written=written,
+        threads_touched=len(threads_touched),
+    )
+    return SearchFetchResult(
+        query=query,
+        matches=matches,
+        threads_touched=len(threads_touched),
     )
 
 

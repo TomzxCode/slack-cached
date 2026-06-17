@@ -14,7 +14,7 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -426,6 +426,138 @@ def _cmd_show_channel(args: argparse.Namespace) -> int:
     return 0
 
 
+def _channel_id_names(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> dict[str, str]:
+    """Return a {channel_id: name} map for just the requested channels.
+
+    Uses one lookup per channel rather than loading every cached channel, so
+    cost scales with the matches rather than the whole workspace.
+    """
+    names: dict[str, str] = {}
+    for cid in dict.fromkeys(channel_ids):
+        if not cid:
+            continue
+        cached_ch = get_channel(conn, cid)
+        if cached_ch and cached_ch.name:
+            names[cid] = cached_ch.name
+    return names
+
+
+def _render_search_human(
+    query: str,
+    matches: list[dict[str, Any]],
+    user_names: dict[str, str] | None = None,
+    channel_names: dict[str, str] | None = None,
+) -> str:
+    """Render search matches as a human-readable string.
+
+    Each match is printed with its channel, an optional permalink, the author
+    and the message text, in the same style as `_render_human`.
+    """
+    names = user_names or {}
+    ch_names = channel_names or {}
+    lines = [f"Search: {query}", f"{len(matches)} match(es)", ""]
+    for msg in matches:
+        channel = msg.get("channel") or "?"
+        ch_label = ch_names.get(channel, channel)
+        ts = msg.get("ts", "?")
+        user = msg.get("user")
+        author = names.get(user, user) if user else "(unknown)"
+        text = msg.get("text") if msg.get("text") is not None else ""
+        permalink = msg.get("permalink")
+        header = f"[{ch_label}]"
+        if permalink:
+            header = f"{header} {permalink}"
+        lines.append(header)
+        lines.append(f"[{_format_ts(ts)}] {author}")
+        for text_line in text.splitlines() or [""]:
+            lines.append(f"    {text_line}")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _render_search_json(
+    query: str,
+    matches: list[dict[str, Any]],
+    user_names: dict[str, str] | None = None,
+    channel_names: dict[str, str] | None = None,
+) -> str:
+    """Render search matches as a pretty-printed JSON string."""
+    names = user_names or {}
+    ch_names = channel_names or {}
+    enriched: list[dict[str, Any]] = []
+    for msg in matches:
+        channel = msg.get("channel")
+        user = msg.get("user")
+        entry: dict[str, Any] = {
+            "channel": channel,
+            "channel_name": ch_names.get(channel) if channel else None,
+            "ts": msg.get("ts"),
+            "thread_ts": msg.get("thread_ts"),
+            "user": user,
+            "text": msg.get("text"),
+            "permalink": msg.get("permalink"),
+        }
+        if user and user in names:
+            entry["user_name"] = names[user]
+        enriched.append(entry)
+    payload: dict[str, Any] = {
+        "query": query,
+        "match_count": len(matches),
+        "matches": enriched,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    """Search Slack via search.messages and cache the matched messages/threads.
+
+    Search is inherently a live operation: every run hits the API.  Every
+    matched message is cached under its ``(channel, thread_ts)`` so it can be
+    revisited later with `show`.  Output is human-readable by default, JSON
+    with --json.
+    """
+    from .cache import fetch_search
+
+    log.debug("cmd_search_start", query=args.query)
+    client = _build_client(args)
+    with _open_db(args) as conn:
+        with _timed("fetch_search", query=args.query):
+            result = fetch_search(
+                conn,
+                client,
+                query=args.query,
+                count=args.count,
+                sort=args.sort,
+                sort_dir=args.sort_dir,
+                full_threads=args.full_threads,
+            )
+        matches = result.matches
+        log.debug("search_matches", count=len(matches))
+
+        user_ids = {m.get("user") for m in matches if m.get("user")}
+        channel_ids = {m.get("channel") for m in matches if m.get("channel")}
+        with _timed("build_user_names"):
+            user_names = load_user_display_names(conn, user_ids)
+        with _timed("build_channel_names"):
+            channel_names = _channel_id_names(conn, channel_ids)
+
+    with _timed("render", format="json" if args.json else "human", matches=len(matches)):
+        output = (
+            _render_search_json(args.query, matches, user_names, channel_names)
+            if args.json
+            else _render_search_human(args.query, matches, user_names, channel_names)
+        )
+    with _timed("write_output", bytes=len(output)):
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    print(
+        f"searched {args.query!r}: {len(matches)} match(es), "
+        f"{result.threads_touched} thread(s) cached",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_fetch_users(args: argparse.Namespace) -> int:
     """Fetch and cache every workspace user."""
     from .cache import fetch_users
@@ -769,6 +901,46 @@ def _build_parser() -> argparse.ArgumentParser:
         "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
     )
     show.set_defaults(func=cmd_show)
+
+    search = sub.add_parser(
+        "search",
+        help="Search Slack via search.messages and cache the matched messages/threads.",
+    )
+    search.add_argument(
+        "query",
+        help="Slack search query (same syntax as the Slack search box).",
+    )
+    search.add_argument(
+        "--count",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Maximum results per page (default: 20).",
+    )
+    search.add_argument(
+        "--sort",
+        default="timestamp",
+        choices=["score", "timestamp"],
+        help="Sort matches by 'score' or 'timestamp' (default: timestamp).",
+    )
+    search.add_argument(
+        "--sort-dir",
+        default="desc",
+        choices=["asc", "desc"],
+        help="Sort direction, 'asc' or 'desc' (default: desc).",
+    )
+    search.add_argument(
+        "--full-threads",
+        action="store_true",
+        help="Also fetch all replies for every thread a match belongs to.",
+    )
+    _add_db_args(search)
+    search.add_argument(
+        "--json",
+        action="store_true",
+        help="Render output as JSON instead of human-readable text.",
+    )
+    search.set_defaults(func=cmd_search)
 
     fetch_users_cmd = sub.add_parser("fetch-users", help="Cache or refresh all workspace users.")
     _add_db_args(fetch_users_cmd)

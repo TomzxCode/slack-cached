@@ -506,6 +506,196 @@ def test_show_channel_with_name(
     assert "general" in out
 
 
+class FakeSearchClient:
+    """Stub client returning fixed search matches."""
+
+    def __init__(self, matches=None, thread_replies=None):
+        self._matches = matches or []
+        self._thread_replies = thread_replies or {}
+        self.search_calls = []
+
+    def iter_search_messages(
+        self,
+        query,
+        count=20,
+        sort="timestamp",
+        sort_dir="desc",
+    ):
+        self.search_calls.append(
+            {"query": query, "count": count, "sort": sort, "sort_dir": sort_dir}
+        )
+        yield from self._matches
+
+    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        yield from self._thread_replies.get((channel, thread_ts), [])
+
+
+def test_search_human_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Search prints human-readable matches and caches them."""
+    db_path = tmp_path / "cache.db"
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello world",
+                "channel": "C1",
+                "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["search", "hello", "--db", str(db_path)])
+    assert rc == 0
+
+    captured = capsys.readouterr()
+    out = captured.out
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(out)
+    assert "Search: hello" in out
+    assert "1 match(es)" in out
+    assert "C1" in out
+    assert "hello world" in out
+    assert "acme.slack.com" in out
+
+    err = captured.err
+    assert "1 match(es)" in err
+    assert "thread(s) cached" in err
+
+
+def test_search_json_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Search emits JSON when --json is passed."""
+    db_path = tmp_path / "cache.db"
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello",
+                "channel": "C1",
+                "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["search", "hello", "--json", "--db", str(db_path)])
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["query"] == "hello"
+    assert payload["match_count"] == 1
+    assert payload["matches"][0]["text"] == "hello"
+    assert payload["matches"][0]["channel"] == "C1"
+
+
+def test_search_passes_count_sort_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Search forwards --count, --sort and --sort-dir to the client."""
+    db_path = tmp_path / "cache.db"
+    client = FakeSearchClient(matches=[])
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(
+        [
+            "search",
+            "deploy",
+            "--count",
+            "5",
+            "--sort",
+            "score",
+            "--sort-dir",
+            "asc",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+    assert client.search_calls[0]["count"] == 5
+    assert client.search_calls[0]["sort"] == "score"
+    assert client.search_calls[0]["sort_dir"] == "asc"
+
+
+def test_search_caches_matches_for_show(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A message found by search is afterwards retrievable via show --no-fetch."""
+    db_path = tmp_path / "cache.db"
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "cached via search",
+                "channel": "C1",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    assert cli.main(["search", "cached", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(
+        [
+            "show",
+            "--channel",
+            "C1",
+            "--ts",
+            "1700000000.000100",
+            "--db",
+            str(db_path),
+            "--no-fetch",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cached via search" in out
+
+
+def test_search_renders_cached_user_and_channel_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Search resolves user/channel ids to display names when cached."""
+    db_path = tmp_path / "cache.db"
+
+    class SeedClient:
+        def iter_users(self, limit: int = 1000):
+            yield {"id": "U1", "name": "alice", "real_name": "Alice Smith"}
+
+        def iter_channels(self, types="public_channel", limit=1000):
+            yield {"id": "C1", "name": "general", "is_private": False}
+
+    monkeypatch.setattr(cli, "_build_client", lambda args: SeedClient())
+    assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello",
+                "channel": "C1",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["search", "hello", "--json", "--db", str(db_path)])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matches"][0]["user_name"] == "Alice Smith (alice)"
+    assert payload["matches"][0]["channel_name"] == "general"
+
+
 class FakeAsyncPollClient:
     """Async stub client for poll tests that tracks calls per channel."""
 

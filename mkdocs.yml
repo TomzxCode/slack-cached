@@ -44,6 +44,7 @@ nav:
     - Getting started: user-guide/getting-started.md
     - Fetching threads: user-guide/fetching-threads.md
     - Fetching channel messages: user-guide/fetching-channel-messages.md
+    - Searching messages: user-guide/searching.md
     - Caching users: user-guide/caching-users.md
     - Caching channels: user-guide/caching-channels.md
     - Configuration: user-guide/configuration.md

@@ -89,6 +89,30 @@ replies:
 slack-cached fetch --channel C0123ABCDEF --full-threads
 ```
 
+### Search
+
+Search the workspace with the same query syntax as the Slack search box. Every
+matched message is cached under its `(channel, thread_ts)` so it can be revisited
+later with `show`. Search is always a live API call:
+
+```bash
+slack-cached search "deploy failed"
+slack-cached search "from:@alice after:2024-01-01" --json
+```
+
+Add `--full-threads` to also fetch every reply for each thread a match belongs to:
+
+```bash
+slack-cached search "incident" --full-threads
+```
+
+Tune result paging and ordering with `--count`, `--sort` (`score` or `timestamp`,
+default `timestamp`), and `--sort-dir` (`asc` or `desc`, default `desc`).
+
+```bash
+slack-cached search "RFC" --count 5 --sort score --sort-dir asc
+```
+
 ### Polling channels
 
 Poll multiple channels concurrently for new messages:
