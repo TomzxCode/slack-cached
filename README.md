@@ -66,12 +66,14 @@ Or with explicit channel/ts:
 slack-cached fetch --channel C0123ABCDEF --ts 1700000000.123456
 ```
 
-Show a cached thread (human-readable by default; use `--json` for JSON). It
-auto-fetches if the thread is missing; pass `--no-fetch` to disable that:
+Show a cached thread (human-readable by default; use `--json` for JSON, or
+`--jsonl` for the whole payload as a single compact JSON line). It auto-fetches
+if the thread is missing; pass `--no-fetch` to disable that:
 
 ```bash
 slack-cached show https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
 slack-cached show --json https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
+slack-cached show --jsonl --channel C0123ABCDEF --ts 1700000000.123456 >> threads.jsonl
 ```
 
 ### Channel messages
@@ -98,6 +100,7 @@ later with `show`. Search is always a live API call:
 ```bash
 slack-cached search "deploy failed"
 slack-cached search "from:@alice after:2024-01-01" --json
+slack-cached search "incident" --jsonl   # one JSON line per run, easy to append
 ```
 
 Add `--full-threads` to also fetch every reply for each thread a match belongs to:
@@ -135,12 +138,14 @@ slack-cached fetch-users
 slack-cached fetch-channels
 ```
 
-Show cached users or channels (human-readable by default, `--json` for JSON;
-both auto-fetch when empty unless `--no-fetch` is given):
+Show cached users or channels (human-readable by default, `--json` for pretty
+JSON, `--jsonl` for a single compact JSON line; both auto-fetch when empty
+unless `--no-fetch` is given):
 
 ```bash
 slack-cached show-users
 slack-cached show-channels --json
+slack-cached show-channels --jsonl
 ```
 
 When a thread's authors are present in the cached users, `show` renders their

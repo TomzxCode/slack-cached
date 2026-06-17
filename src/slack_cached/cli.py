@@ -118,6 +118,22 @@ def _add_db_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
 
 
+def _add_format_group(parser: argparse.ArgumentParser) -> None:
+    """Add the mutually exclusive --json / --jsonl output-format flags."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--json",
+        action="store_true",
+        help="Render output as pretty-printed JSON.",
+    )
+    group.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Render output as a single JSON line (compact JSON, no indentation). "
+        "Convenient for piping into jq -c, wc -l, or appending to a .jsonl file.",
+    )
+
+
 @contextmanager
 def _open_db(args: argparse.Namespace) -> Iterator[sqlite3.Connection]:
     db_path = args.db or default_db_path()
@@ -242,6 +258,19 @@ def _build_user_names(conn: sqlite3.Connection, messages: list[CachedMessage]) -
     return load_user_display_names(conn, user_ids)
 
 
+def _output_format(args: argparse.Namespace) -> str:
+    """Return the requested output format: 'jsonl', 'json', or 'human'.
+
+    --json and --jsonl are mutually exclusive at the parser level, so only one
+    can be set at a time. Defaults to human-readable when neither is given.
+    """
+    if getattr(args, "jsonl", False):
+        return "jsonl"
+    if getattr(args, "json", False):
+        return "json"
+    return "human"
+
+
 def _render_human(
     ref: ThreadRef,
     messages: list[CachedMessage],
@@ -273,8 +302,14 @@ def _render_json(
     messages: list[CachedMessage],
     user_names: dict[str, str] | None = None,
     channel_name: str | None = None,
+    *,
+    indent: int | None = 2,
 ) -> str:
-    """Render a thread as a pretty-printed JSON string."""
+    """Render a thread as a JSON string (pretty-printed by default).
+
+    Pass ``indent=None`` to emit the whole payload as a single line, suitable
+    for JSONL output (one record per invocation).
+    """
     names = user_names or {}
     enriched: list[dict[str, Any]] = []
     for msg in messages:
@@ -289,7 +324,7 @@ def _render_json(
         "message_count": len(messages),
         "messages": enriched,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
 
 
 def _render_channel_human(
@@ -320,7 +355,13 @@ def _render_channel_json(
     messages: list[CachedMessage],
     user_names: dict[str, str] | None = None,
     channel_name: str | None = None,
+    *,
+    indent: int | None = 2,
 ) -> str:
+    """Render a channel's messages as JSON (pretty-printed by default).
+
+    Pass ``indent=None`` to emit the whole payload as a single line.
+    """
     names = user_names or {}
     enriched: list[dict[str, Any]] = []
     for msg in messages:
@@ -334,7 +375,7 @@ def _render_channel_json(
         "message_count": len(messages),
         "messages": enriched,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -380,12 +421,18 @@ def cmd_show(args: argparse.Namespace) -> int:
         cached_ch = get_channel(conn, ref.channel)
         channel_name = cached_ch.name if cached_ch else None
 
-    with _timed("render", format="json" if args.json else "human", messages=len(messages)):
-        output = (
-            _render_json(ref, messages, user_names, channel_name)
-            if args.json
-            else _render_human(ref, messages, user_names)
-        )
+    with _timed("render", format=_output_format(args), messages=len(messages)):
+        fmt = _output_format(args)
+        if fmt in ("json", "jsonl"):
+            output = _render_json(
+                ref,
+                messages,
+                user_names,
+                channel_name,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_human(ref, messages, user_names)
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
         sys.stdout.flush()
@@ -414,12 +461,18 @@ def _cmd_show_channel(args: argparse.Namespace) -> int:
         cached_ch = get_channel(conn, args.channel)
         channel_name = cached_ch.name if cached_ch else None
 
-    with _timed("render", format="json" if args.json else "human", messages=len(messages)):
-        output = (
-            _render_channel_json(args.channel, messages, user_names, channel_name)
-            if args.json
-            else _render_channel_human(args.channel, messages, user_names, channel_name)
-        )
+    with _timed("render", format=_output_format(args), messages=len(messages)):
+        fmt = _output_format(args)
+        if fmt in ("json", "jsonl"):
+            output = _render_channel_json(
+                args.channel,
+                messages,
+                user_names,
+                channel_name,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_channel_human(args.channel, messages, user_names, channel_name)
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
         sys.stdout.flush()
@@ -480,8 +533,13 @@ def _render_search_json(
     matches: list[dict[str, Any]],
     user_names: dict[str, str] | None = None,
     channel_names: dict[str, str] | None = None,
+    *,
+    indent: int | None = 2,
 ) -> str:
-    """Render search matches as a pretty-printed JSON string."""
+    """Render search matches as a JSON string (pretty-printed by default).
+
+    Pass ``indent=None`` to emit the whole payload as a single line.
+    """
     names = user_names or {}
     ch_names = channel_names or {}
     enriched: list[dict[str, Any]] = []
@@ -505,7 +563,7 @@ def _render_search_json(
         "match_count": len(matches),
         "matches": enriched,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
 
 
 def cmd_search(args: argparse.Namespace) -> int:
@@ -541,12 +599,18 @@ def cmd_search(args: argparse.Namespace) -> int:
         with _timed("build_channel_names"):
             channel_names = _channel_id_names(conn, channel_ids)
 
-    with _timed("render", format="json" if args.json else "human", matches=len(matches)):
-        output = (
-            _render_search_json(args.query, matches, user_names, channel_names)
-            if args.json
-            else _render_search_human(args.query, matches, user_names, channel_names)
-        )
+    with _timed("render", format=_output_format(args), matches=len(matches)):
+        fmt = _output_format(args)
+        if fmt in ("json", "jsonl"):
+            output = _render_search_json(
+                args.query,
+                matches,
+                user_names,
+                channel_names,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_search_human(args.query, matches, user_names, channel_names)
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
         sys.stdout.flush()
@@ -614,9 +678,12 @@ def cmd_show_users(args: argparse.Namespace) -> int:
             fetch_users(conn, _build_client(args))
         users = load_users(conn)
 
-    if args.json:
+    fmt = _output_format(args)
+    if fmt in ("json", "jsonl"):
         payload = {"user_count": len(users), "users": [asdict(u) for u in users]}
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
+        )
     else:
         sys.stdout.write(_render_users_human(users))
     return 0
@@ -632,9 +699,12 @@ def cmd_show_channels(args: argparse.Namespace) -> int:
             fetch_channels(conn, _build_client(args))
         channels = load_channels(conn)
 
-    if args.json:
+    fmt = _output_format(args)
+    if fmt in ("json", "jsonl"):
         payload = {"channel_count": len(channels), "channels": [asdict(c) for c in channels]}
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
+        )
     else:
         sys.stdout.write(_render_channels_human(channels))
     return 0
@@ -887,11 +957,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not auto-fetch when the thread or channel is not yet cached.",
     )
-    show.add_argument(
-        "--json",
-        action="store_true",
-        help="Render output as JSON instead of human-readable text.",
-    )
+    _add_format_group(show)
     show.add_argument(
         "--last",
         type=str,
@@ -935,11 +1001,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Also fetch all replies for every thread a match belongs to.",
     )
     _add_db_args(search)
-    search.add_argument(
-        "--json",
-        action="store_true",
-        help="Render output as JSON instead of human-readable text.",
-    )
+    _add_format_group(search)
     search.set_defaults(func=cmd_search)
 
     fetch_users_cmd = sub.add_parser("fetch-users", help="Cache or refresh all workspace users.")
@@ -962,11 +1024,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not auto-fetch when users are not yet cached.",
     )
-    show_users_cmd.add_argument(
-        "--json",
-        action="store_true",
-        help="Render output as JSON instead of human-readable text.",
-    )
+    _add_format_group(show_users_cmd)
     show_users_cmd.set_defaults(func=cmd_show_users)
 
     show_channels_cmd = sub.add_parser(
@@ -979,11 +1037,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not auto-fetch when channels are not yet cached.",
     )
-    show_channels_cmd.add_argument(
-        "--json",
-        action="store_true",
-        help="Render output as JSON instead of human-readable text.",
-    )
+    _add_format_group(show_channels_cmd)
     show_channels_cmd.set_defaults(func=cmd_show_channels)
 
     poll_cmd = sub.add_parser(

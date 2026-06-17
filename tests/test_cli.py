@@ -148,6 +148,61 @@ def test_show_prints_json_with_flag(
     assert payload["messages"][0]["text"] == "hello"
 
 
+def test_show_prints_jsonl_with_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Show emits the whole thread as a single JSON line with --jsonl."""
+    db_path = tmp_path / "cache.db"
+    _populate_single_message(monkeypatch, db_path)
+
+    rc = cli.main(
+        [
+            "show",
+            "--channel",
+            "C0123ABCDEF",
+            "--ts",
+            "1700000000.000100",
+            "--db",
+            str(db_path),
+            "--no-fetch",
+            "--jsonl",
+        ]
+    )
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    # Output is exactly one JSON document on a single line (plus trailing newline).
+    lines = out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["channel"] == "C0123ABCDEF"
+    assert payload["thread_ts"] == "1700000000.000100"
+    assert payload["message_count"] == 1
+    assert payload["messages"][0]["text"] == "hello"
+
+
+def test_show_json_and_jsonl_are_mutually_exclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--json and --jsonl cannot be combined."""
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "show",
+                "--channel",
+                "C1",
+                "--ts",
+                "1.0",
+                "--db",
+                str(tmp_path / "cache.db"),
+                "--json",
+                "--jsonl",
+            ]
+        )
+    err = capsys.readouterr().err
+    assert "not allowed with argument" in err
+
+
 def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db_path = tmp_path / "cache.db"
     calls: list[str | None] = []
@@ -234,6 +289,23 @@ def test_show_users_json(
     assert payload["users"][0]["name"] == "alice"
 
 
+def test_show_users_jsonl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-users --jsonl emits a single compact JSON line."""
+    db_path = tmp_path / "cache.db"
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+
+    rc = cli.main(["show-users", "--db", str(db_path), "--jsonl"])
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["user_count"] == 1
+    assert payload["users"][0]["id"] == "U1"
+    assert payload["users"][0]["name"] == "alice"
+
+
 def test_fetch_channels_then_show(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -261,6 +333,23 @@ def test_show_channels_json(
     rc = cli.main(["show-channels", "--db", str(db_path), "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["channel_count"] == 1
+    assert payload["channels"][0]["id"] == "C1"
+    assert payload["channels"][0]["is_private"] is False
+
+
+def test_show_channels_jsonl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-channels --jsonl emits a single compact JSON line."""
+    db_path = tmp_path / "cache.db"
+    monkeypatch.setattr(cli, "_build_client", lambda _: FakeListClient())
+
+    rc = cli.main(["show-channels", "--db", str(db_path), "--jsonl"])
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
     assert payload["channel_count"] == 1
     assert payload["channels"][0]["id"] == "C1"
     assert payload["channels"][0]["is_private"] is False
@@ -455,6 +544,31 @@ def test_show_channel_without_ts_json(
     assert payload["messages"][0]["text"] == "hello"
 
 
+def test_show_channel_without_ts_jsonl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`show --channel --jsonl` emits a single compact JSON line."""
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[
+            {"ts": "1700000000.000100", "user": "U1", "text": "hello"},
+            {"ts": "1700000000.000200", "user": "U2", "text": "world"},
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["show", "--channel", "C1", "--db", str(db_path), "--jsonl"])
+    assert rc == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["channel"] == "C1"
+    assert payload["message_count"] == 2
+    assert payload["messages"][0]["text"] == "hello"
+    assert payload["messages"][1]["text"] == "world"
+
+
 def test_show_channel_without_ts_uses_cached(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -593,6 +707,45 @@ def test_search_json_output(
     assert payload["match_count"] == 1
     assert payload["matches"][0]["text"] == "hello"
     assert payload["matches"][0]["channel"] == "C1"
+
+
+def test_search_jsonl_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Search emits the whole result set as a single JSON line with --jsonl."""
+    db_path = tmp_path / "cache.db"
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello",
+                "channel": "C1",
+                "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            },
+            {
+                "ts": "1700000000.000200",
+                "thread_ts": "1700000000.000200",
+                "user": "U2",
+                "text": "world",
+                "channel": "C2",
+                "permalink": "https://acme.slack.com/archives/C2/p1700000000000200",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli, "_build_client", lambda args: client)
+
+    rc = cli.main(["search", "hello", "--jsonl", "--db", str(db_path)])
+    assert rc == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["query"] == "hello"
+    assert payload["match_count"] == 2
+    assert payload["matches"][0]["text"] == "hello"
+    assert payload["matches"][1]["text"] == "world"
 
 
 def test_search_passes_count_sort_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

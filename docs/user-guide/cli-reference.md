@@ -31,7 +31,7 @@ slack-cached fetch [URL] [--channel CHANNEL] [--ts TS] [--full-threads] [--last 
 Print a cached thread or channel to stdout.
 
 ```bash
-slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json] [--no-fetch] [--last DURATION]
+slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json | --jsonl] [--no-fetch] [--last DURATION]
 ```
 
 | Argument | Description |
@@ -39,7 +39,8 @@ slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json] [--no-fetch] [--l
 | `URL` | Slack thread permalink URL |
 | `--channel CHANNEL` | Channel ID (shows all channel messages without `--ts`) |
 | `--ts TS` | Thread root timestamp |
-| `--json` | Output as JSON |
+| `--json` | Output as pretty-printed JSON |
+| `--jsonl` | Output as a single compact JSON line (mutually exclusive with `--json`) |
 | `--no-fetch` | Do not auto-fetch if not cached |
 | `--last DURATION` | Lookback period for channel display (default: `1d`) |
 
@@ -48,7 +49,7 @@ slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json] [--no-fetch] [--l
 Search Slack via `search.messages` and cache every matched message/thread.
 
 ```bash
-slack-cached search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|desc] [--full-threads] [--json]
+slack-cached search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|desc] [--full-threads] [--json | --jsonl]
 ```
 
 | Argument | Description |
@@ -58,7 +59,8 @@ slack-cached search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|d
 | `--sort` | Sort by `score` or `timestamp` (default: `timestamp`) |
 | `--sort-dir` | Sort direction, `asc` or `desc` (default: `desc`) |
 | `--full-threads` | Also fetch all replies for every thread a match belongs to |
-| `--json` | Output as JSON |
+| `--json` | Output as pretty-printed JSON |
+| `--jsonl` | Output as a single compact JSON line (mutually exclusive with `--json`) |
 
 Search is always a live API call. Every matched message is cached under its
 `(channel, thread_ts)` so it can be revisited later with `show`.
@@ -84,7 +86,7 @@ slack-cached fetch-channels
 Print cached users.
 
 ```bash
-slack-cached show-users [--json] [--no-fetch]
+slack-cached show-users [--json | --jsonl] [--no-fetch]
 ```
 
 ### show-channels
@@ -92,7 +94,7 @@ slack-cached show-users [--json] [--no-fetch]
 Print cached channels.
 
 ```bash
-slack-cached show-channels [--json] [--no-fetch]
+slack-cached show-channels [--json | --jsonl] [--no-fetch]
 ```
 
 ### poll
