@@ -200,7 +200,7 @@ def test_show_json_and_jsonl_are_mutually_exclusive(
             ]
         )
     err = capsys.readouterr().err
-    assert "not allowed with argument" in err
+    assert "mutually exclusive" in err
 
 
 def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -233,10 +233,8 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 
 def test_resolve_ref_requires_url_or_channel_ts() -> None:
-    parser = cli._build_parser()
-    args = parser.parse_args(["fetch"])
     with pytest.raises(SystemExit):
-        cli._resolve_ref(args)
+        cli._resolve_ref(None, None, None)
 
 
 def test_fetch_result_dataclass_fields() -> None:

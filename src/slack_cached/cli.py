@@ -7,7 +7,6 @@ Subcommands:
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import re
@@ -16,12 +15,13 @@ import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import structlog
+from cyclopts import App, Parameter
 
 from .config import default_db_path
 from .storage import (
@@ -44,6 +44,74 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+app = App(
+    name="slack-cached",
+    help="Cache Slack threads to a local SQLite database.",
+    version="0.1.0",
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared parameter annotations (kept once so every command stays in sync)
+# ---------------------------------------------------------------------------
+
+DbArg = Annotated[
+    Path | None,
+    Parameter(help=f"SQLite cache path (default: {default_db_path()})."),
+]
+ApiBaseUrlArg = Annotated[
+    str | None,
+    Parameter(
+        help="Slack API base URL (default: https://slack.com/api, use "
+        "http://localhost:PORT/api for the fake server). Can also be set via "
+        "the SLACK_API_BASE_URL environment variable.",
+    ),
+]
+VerboseArg = Annotated[
+    bool,
+    Parameter(name=["--verbose", "-v"], help="Enable debug logging."),
+]
+JsonArg = Annotated[
+    bool,
+    Parameter(name="--json", help="Render output as pretty-printed JSON."),
+]
+JsonlArg = Annotated[
+    bool,
+    Parameter(
+        name="--jsonl",
+        help="Render output as a single compact JSON line (no indentation). "
+        "Convenient for piping into jq -c, wc -l, or appending to a .jsonl file.",
+    ),
+]
+NoFetchArg = Annotated[
+    bool,
+    Parameter(name="--no-fetch", help="Do not auto-fetch when not yet cached."),
+]
+UrlArg = Annotated[
+    str | None,
+    Parameter(
+        help="Slack thread permalink (e.g. "
+        "https://acme.slack.com/archives/C123/p1700000000123456).",
+    ),
+]
+ChannelArg = Annotated[
+    str | None,
+    Parameter(help="Slack channel id, used with --ts."),
+]
+TsArg = Annotated[
+    str | None,
+    Parameter(help="Thread root ts (e.g. 1700000000.123456), used with --channel."),
+]
+
+
+@dataclass
+class CommonArgs:
+    """Carries the shared db/api-base-url/verbose flags through internal helpers."""
+
+    db: Path | None = None
+    api_base_url: str | None = None
+    verbose: bool = False
+
 
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -56,6 +124,14 @@ def _configure_logging(verbose: bool) -> None:
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
     )
+
+
+def _setup(db: Path | None, api_base_url: str | None, verbose: bool) -> CommonArgs:
+    """Build the CommonArgs carrier and wire up logging in one place."""
+    common = CommonArgs(db=db, api_base_url=api_base_url, verbose=verbose)
+    _configure_logging(verbose)
+    log.debug("dispatch")
+    return common
 
 
 @contextmanager
@@ -78,65 +154,33 @@ def _timed(phase: str, **fields: object) -> Iterator[None]:
         )
 
 
-def _resolve_ref(args: argparse.Namespace) -> ThreadRef:
-    """Build a ThreadRef from either --url or --channel/--ts."""
-    if args.url:
-        return parse_thread_url(args.url)
-    if args.channel and args.ts:
-        return parse_channel_ts(args.channel, args.ts)
+def _resolve_ref(url: str | None, channel: str | None, ts: str | None) -> ThreadRef:
+    """Build a ThreadRef from either a URL or --channel/--ts pair."""
+    if url:
+        return parse_thread_url(url)
+    if channel and ts:
+        return parse_channel_ts(channel, ts)
     raise SystemExit("Provide either a URL or both --channel and --ts.")
 
 
-def _add_target_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "url",
-        nargs="?",
-        help="Slack thread permalink (e.g. https://acme.slack.com/archives/C123/p1700000000123456).",
-    )
-    parser.add_argument("--channel", help="Slack channel id, used with --ts.")
-    parser.add_argument(
-        "--ts",
-        help="Thread root ts (e.g. 1700000000.123456), used with --channel.",
-    )
-    _add_db_args(parser)
+def _output_format(json_flag: bool, jsonl_flag: bool) -> str:
+    """Resolve the requested output format, enforcing --json/--jsonl exclusion.
 
-
-def _add_db_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=None,
-        help=f"SQLite cache path (default: {default_db_path()}).",
-    )
-    parser.add_argument(
-        "--api-base-url",
-        default=None,
-        help="Slack API base URL (default: https://slack.com/api, use "
-        "http://localhost:PORT/api for the fake server).  Can also be set via "
-        "the SLACK_API_BASE_URL environment variable.",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
-
-
-def _add_format_group(parser: argparse.ArgumentParser) -> None:
-    """Add the mutually exclusive --json / --jsonl output-format flags."""
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--json",
-        action="store_true",
-        help="Render output as pretty-printed JSON.",
-    )
-    group.add_argument(
-        "--jsonl",
-        action="store_true",
-        help="Render output as a single JSON line (compact JSON, no indentation). "
-        "Convenient for piping into jq -c, wc -l, or appending to a .jsonl file.",
-    )
+    Returns 'human', 'json', or 'jsonl'. Raises SystemExit if both flags are set.
+    """
+    if json_flag and jsonl_flag:
+        print("--json and --jsonl are mutually exclusive.", file=sys.stderr)
+        raise SystemExit(2)
+    if jsonl_flag:
+        return "jsonl"
+    if json_flag:
+        return "json"
+    return "human"
 
 
 @contextmanager
-def _open_db(args: argparse.Namespace) -> Iterator[sqlite3.Connection]:
-    db_path = args.db or default_db_path()
+def _open_db(common: CommonArgs) -> Iterator[sqlite3.Connection]:
+    db_path = common.db or default_db_path()
     conn = connect(db_path)
     try:
         yield conn
@@ -144,13 +188,13 @@ def _open_db(args: argparse.Namespace) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _build_client(args: argparse.Namespace) -> SlackClient:
+def _build_client(common: CommonArgs) -> SlackClient:
     # Imported lazily so commands that never hit the network (e.g.
     # `show --no-fetch`) avoid loading the requests-based API client.
     from .config import load_api_base_url, load_credentials
     from .slack_api import DEFAULT_API_BASE, SlackClient
 
-    base_url = args.api_base_url or load_api_base_url() or DEFAULT_API_BASE
+    base_url = common.api_base_url or load_api_base_url() or DEFAULT_API_BASE
     try:
         credentials = load_credentials()
     except SystemExit:
@@ -159,50 +203,6 @@ def _build_client(args: argparse.Namespace) -> SlackClient:
         else:
             raise
     return SlackClient(credentials, base_url=base_url)
-
-
-def cmd_fetch(args: argparse.Namespace) -> int:
-    """Cache or refresh a thread, or fetch all messages from a channel."""
-    if args.channel and not args.ts and not args.url:
-        return _cmd_fetch_channel_messages(args)
-
-    from .cache import fetch_thread
-
-    ref = _resolve_ref(args)
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        result = fetch_thread(conn, client, ref)
-    print(
-        f"cached {result.total_messages} messages "
-        f"({result.fetched_messages} new/updated, "
-        f"{'incremental' if result.incremental else 'full'}) "
-        f"for {result.channel}/{result.thread_ts}",
-        file=sys.stderr,
-    )
-    return 0
-
-
-def _cmd_fetch_channel_messages(args: argparse.Namespace) -> int:
-    """Fetch messages from a channel."""
-    from .cache import fetch_channel_messages
-
-    oldest = _oldest_ts_from_last(args.last)
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        result = fetch_channel_messages(
-            conn, client, args.channel, full_threads=args.full_threads, oldest=oldest
-        )
-    detail = (
-        f", {result.threads_with_replies_fetched} threads with replies fetched"
-        if args.full_threads
-        else ""
-    )
-    print(
-        f"cached {result.total_messages} messages for {result.channel} "
-        f"({result.fetched_messages} fetched{detail})",
-        file=sys.stderr,
-    )
-    return 0
 
 
 _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)([dhms])", re.IGNORECASE)
@@ -258,17 +258,9 @@ def _build_user_names(conn: sqlite3.Connection, messages: list[CachedMessage]) -
     return load_user_display_names(conn, user_ids)
 
 
-def _output_format(args: argparse.Namespace) -> str:
-    """Return the requested output format: 'jsonl', 'json', or 'human'.
-
-    --json and --jsonl are mutually exclusive at the parser level, so only one
-    can be set at a time. Defaults to human-readable when neither is given.
-    """
-    if getattr(args, "jsonl", False):
-        return "jsonl"
-    if getattr(args, "json", False):
-        return "json"
-    return "human"
+# ---------------------------------------------------------------------------
+# Renderers (output is independent of how arguments were parsed)
+# ---------------------------------------------------------------------------
 
 
 def _render_human(
@@ -378,107 +370,6 @@ def _render_channel_json(
     return json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
 
 
-def cmd_show(args: argparse.Namespace) -> int:
-    """Print the cached thread. Human-readable by default, JSON with --json.
-
-    Fetches first if not already cached (unless --no-fetch is given).
-
-    When --channel is given without --ts, shows all messages for that channel
-    (fetching first if needed, unless --no-fetch).
-    """
-    if args.channel and not args.ts and not args.url:
-        return _cmd_show_channel(args)
-
-    log.debug("cmd_show_start")
-    with _timed("resolve_ref"):
-        ref = _resolve_ref(args)
-    with _open_db(args) as conn:
-        state = get_thread_state(conn, ref.channel, ref.thread_ts)
-        if state is None and not args.no_fetch:
-            log.info(
-                "thread_not_cached_fetching",
-                channel=ref.channel,
-                thread_ts=ref.thread_ts,
-                thread_ts_iso=_format_ts(ref.thread_ts),
-            )
-            if args.verbose:
-                print(
-                    f"fetching thread {ref.channel}/{ref.thread_ts} from Slack...",
-                    file=sys.stderr,
-                )
-            # Imported lazily so the cached-read path does not pull in the
-            # requests-based Slack client (see _build_client).
-            from .cache import fetch_thread
-
-            client = _build_client(args)
-            fetch_thread(conn, client, ref)
-        with _timed("load_thread"):
-            messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
-        log.debug("loaded_messages", count=len(messages))
-        with _timed("build_user_names"):
-            user_names = _build_user_names(conn, messages)
-        log.debug("loaded_user_names", count=len(user_names))
-        cached_ch = get_channel(conn, ref.channel)
-        channel_name = cached_ch.name if cached_ch else None
-
-    with _timed("render", format=_output_format(args), messages=len(messages)):
-        fmt = _output_format(args)
-        if fmt in ("json", "jsonl"):
-            output = _render_json(
-                ref,
-                messages,
-                user_names,
-                channel_name,
-                indent=2 if fmt == "json" else None,
-            )
-        else:
-            output = _render_human(ref, messages, user_names)
-    with _timed("write_output", bytes=len(output)):
-        sys.stdout.write(output)
-        sys.stdout.flush()
-    return 0
-
-
-def _cmd_show_channel(args: argparse.Namespace) -> int:
-    """Show all messages for a channel, fetching first if needed."""
-    oldest = _oldest_ts_from_last(args.last)
-    with _open_db(args) as conn:
-        messages = load_channel_messages(conn, args.channel)
-        if not messages and not args.no_fetch:
-            log.info("channel_not_cached_fetching", channel=args.channel)
-            if args.verbose:
-                print(
-                    f"fetching messages for {args.channel} from Slack...",
-                    file=sys.stderr,
-                )
-            from .cache import fetch_channel_messages
-
-            client = _build_client(args)
-            fetch_channel_messages(conn, client, args.channel, oldest=oldest)
-            messages = load_channel_messages(conn, args.channel)
-        with _timed("build_user_names"):
-            user_names = _build_user_names(conn, messages)
-        cached_ch = get_channel(conn, args.channel)
-        channel_name = cached_ch.name if cached_ch else None
-
-    with _timed("render", format=_output_format(args), messages=len(messages)):
-        fmt = _output_format(args)
-        if fmt in ("json", "jsonl"):
-            output = _render_channel_json(
-                args.channel,
-                messages,
-                user_names,
-                channel_name,
-                indent=2 if fmt == "json" else None,
-            )
-        else:
-            output = _render_channel_human(args.channel, messages, user_names, channel_name)
-    with _timed("write_output", bytes=len(output)):
-        sys.stdout.write(output)
-        sys.stdout.flush()
-    return 0
-
-
 def _channel_id_names(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> dict[str, str]:
     """Return a {channel_id: name} map for just the requested channels.
 
@@ -566,90 +457,6 @@ def _render_search_json(
     return json.dumps(payload, ensure_ascii=False, indent=indent) + "\n"
 
 
-def cmd_search(args: argparse.Namespace) -> int:
-    """Search Slack via search.messages and cache the matched messages/threads.
-
-    Search is inherently a live operation: every run hits the API.  Every
-    matched message is cached under its ``(channel, thread_ts)`` so it can be
-    revisited later with `show`.  Output is human-readable by default, JSON
-    with --json.
-    """
-    from .cache import fetch_search
-
-    log.debug("cmd_search_start", query=args.query)
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        with _timed("fetch_search", query=args.query):
-            result = fetch_search(
-                conn,
-                client,
-                query=args.query,
-                count=args.count,
-                sort=args.sort,
-                sort_dir=args.sort_dir,
-                full_threads=args.full_threads,
-            )
-        matches = result.matches
-        log.debug("search_matches", count=len(matches))
-
-        user_ids = {m.get("user") for m in matches if m.get("user")}
-        channel_ids = {m.get("channel") for m in matches if m.get("channel")}
-        with _timed("build_user_names"):
-            user_names = load_user_display_names(conn, user_ids)
-        with _timed("build_channel_names"):
-            channel_names = _channel_id_names(conn, channel_ids)
-
-    with _timed("render", format=_output_format(args), matches=len(matches)):
-        fmt = _output_format(args)
-        if fmt in ("json", "jsonl"):
-            output = _render_search_json(
-                args.query,
-                matches,
-                user_names,
-                channel_names,
-                indent=2 if fmt == "json" else None,
-            )
-        else:
-            output = _render_search_human(args.query, matches, user_names, channel_names)
-    with _timed("write_output", bytes=len(output)):
-        sys.stdout.write(output)
-        sys.stdout.flush()
-    print(
-        f"searched {args.query!r}: {len(matches)} match(es), "
-        f"{result.threads_touched} thread(s) cached",
-        file=sys.stderr,
-    )
-    return 0
-
-
-def cmd_fetch_users(args: argparse.Namespace) -> int:
-    """Fetch and cache every workspace user."""
-    from .cache import fetch_users
-
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        result = fetch_users(conn, client)
-    print(
-        f"processed {result.processed} users ({result.added} added, {result.total} total in db)",
-        file=sys.stderr,
-    )
-    return 0
-
-
-def cmd_fetch_channels(args: argparse.Namespace) -> int:
-    """Fetch and cache every visible conversation."""
-    from .cache import fetch_channels
-
-    client = _build_client(args)
-    with _open_db(args) as conn:
-        result = fetch_channels(conn, client)
-    print(
-        f"processed {result.processed} channels ({result.added} added, {result.total} total in db)",
-        file=sys.stderr,
-    )
-    return 0
-
-
 def _render_users_human(users: list[CachedUser]) -> str:
     lines = [f"{len(users)} user(s)", ""]
     for user in users:
@@ -668,46 +475,9 @@ def _render_channels_human(channels: list[CachedChannel]) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def cmd_show_users(args: argparse.Namespace) -> int:
-    """Print cached users. Human-readable by default, JSON with --json."""
-    with _open_db(args) as conn:
-        if not args.no_fetch and not load_users(conn):
-            from .cache import fetch_users
-
-            log.info("users_not_cached_fetching")
-            fetch_users(conn, _build_client(args))
-        users = load_users(conn)
-
-    fmt = _output_format(args)
-    if fmt in ("json", "jsonl"):
-        payload = {"user_count": len(users), "users": [asdict(u) for u in users]}
-        sys.stdout.write(
-            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
-        )
-    else:
-        sys.stdout.write(_render_users_human(users))
-    return 0
-
-
-def cmd_show_channels(args: argparse.Namespace) -> int:
-    """Print cached channels. Human-readable by default, JSON with --json."""
-    with _open_db(args) as conn:
-        if not args.no_fetch and not load_channels(conn):
-            from .cache import fetch_channels
-
-            log.info("channels_not_cached_fetching")
-            fetch_channels(conn, _build_client(args))
-        channels = load_channels(conn)
-
-    fmt = _output_format(args)
-    if fmt in ("json", "jsonl"):
-        payload = {"channel_count": len(channels), "channels": [asdict(c) for c in channels]}
-        sys.stdout.write(
-            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
-        )
-    else:
-        sys.stdout.write(_render_channels_human(channels))
-    return 0
+# ---------------------------------------------------------------------------
+# Channel-name resolution helpers (used by poll)
+# ---------------------------------------------------------------------------
 
 
 def _is_channel_id(token: str) -> bool:
@@ -728,7 +498,7 @@ def _channel_name_index(conn: sqlite3.Connection) -> dict[str, str]:
     return {ch.name: ch.id for ch in load_channels(conn) if ch.name}
 
 
-def _resolve_poll_channels(args: argparse.Namespace, raw: str) -> list[str] | None:
+def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
     """Resolve a comma-separated --channels value to channel ids.
 
     Each entry may be a channel id (e.g. C0123456), a bare name (e.g. general),
@@ -754,10 +524,10 @@ def _resolve_poll_channels(args: argparse.Namespace, raw: str) -> list[str] | No
 
     from .cache import fetch_channels
 
-    with _open_db(args) as conn:
+    with _open_db(common) as conn:
         name_to_id = _channel_name_index(conn)
         if any(n not in name_to_id for n in names):
-            client = _build_client(args)
+            client = _build_client(common)
             fetch_channels(conn, client)
             name_to_id = _channel_name_index(conn)
 
@@ -780,46 +550,471 @@ def _resolve_poll_channels(args: argparse.Namespace, raw: str) -> list[str] | No
     return resolved
 
 
-def cmd_poll(args: argparse.Namespace) -> int:
-    """Poll channels concurrently in a loop for new messages."""
-    import asyncio
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
 
-    channels = _resolve_poll_channels(args, args.channels)
-    if not channels:
+
+@app.command
+def fetch(
+    url: UrlArg = None,
+    *,
+    channel: ChannelArg = None,
+    ts: TsArg = None,
+    full_threads: Annotated[
+        bool,
+        Parameter(help="When fetching a channel, also fetch all replies for every thread."),
+    ] = False,
+    last: Annotated[
+        str,
+        Parameter(
+            help="When fetching a channel, limit history to the given lookback "
+            "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
+        ),
+    ] = "1d",
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Cache or refresh a Slack thread, or fetch all messages from a channel."""
+    common = _setup(db, api_base_url, verbose)
+    if channel and not ts and not url:
+        return _fetch_channel_messages(common, channel, full_threads, last)
+
+    from .cache import fetch_thread
+
+    ref = _resolve_ref(url, channel, ts)
+    client = _build_client(common)
+    with _open_db(common) as conn:
+        result = fetch_thread(conn, client, ref)
+    print(
+        f"cached {result.total_messages} messages "
+        f"({result.fetched_messages} new/updated, "
+        f"{'incremental' if result.incremental else 'full'}) "
+        f"for {result.channel}/{result.thread_ts}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _fetch_channel_messages(common: CommonArgs, channel: str, full_threads: bool, last: str) -> int:
+    """Fetch messages from a channel."""
+    from .cache import fetch_channel_messages
+
+    oldest = _oldest_ts_from_last(last)
+    client = _build_client(common)
+    with _open_db(common) as conn:
+        result = fetch_channel_messages(
+            conn, client, channel, full_threads=full_threads, oldest=oldest
+        )
+    detail = (
+        f", {result.threads_with_replies_fetched} threads with replies fetched"
+        if full_threads
+        else ""
+    )
+    print(
+        f"cached {result.total_messages} messages for {result.channel} "
+        f"({result.fetched_messages} fetched{detail})",
+        file=sys.stderr,
+    )
+    return 0
+
+
+@app.command
+def show(
+    url: UrlArg = None,
+    *,
+    channel: ChannelArg = None,
+    ts: TsArg = None,
+    no_fetch: NoFetchArg = False,
+    json_output: JsonArg = False,
+    jsonl_output: JsonlArg = False,
+    last: Annotated[
+        str,
+        Parameter(
+            help="When showing a channel, limit history to the given lookback "
+            "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
+        ),
+    ] = "1d",
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Print a cached thread or channel to stdout (human-readable by default).
+
+    Fetches first if not already cached (unless --no-fetch is given).
+
+    When --channel is given without --ts, shows all messages for that channel
+    (fetching first if needed, unless --no-fetch).
+    """
+    common = _setup(db, api_base_url, verbose)
+    fmt = _output_format(json_output, jsonl_output)
+
+    if channel and not ts and not url:
+        return _show_channel(common, channel, no_fetch, last, fmt)
+
+    log.debug("cmd_show_start")
+    with _timed("resolve_ref"):
+        ref = _resolve_ref(url, channel, ts)
+    with _open_db(common) as conn:
+        state = get_thread_state(conn, ref.channel, ref.thread_ts)
+        if state is None and not no_fetch:
+            log.info(
+                "thread_not_cached_fetching",
+                channel=ref.channel,
+                thread_ts=ref.thread_ts,
+                thread_ts_iso=_format_ts(ref.thread_ts),
+            )
+            if verbose:
+                print(
+                    f"fetching thread {ref.channel}/{ref.thread_ts} from Slack...",
+                    file=sys.stderr,
+                )
+            # Imported lazily so the cached-read path does not pull in the
+            # requests-based Slack client (see _build_client).
+            from .cache import fetch_thread
+
+            client = _build_client(common)
+            fetch_thread(conn, client, ref)
+        with _timed("load_thread"):
+            messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
+        log.debug("loaded_messages", count=len(messages))
+        with _timed("build_user_names"):
+            user_names = _build_user_names(conn, messages)
+        log.debug("loaded_user_names", count=len(user_names))
+        cached_ch = get_channel(conn, ref.channel)
+        channel_name = cached_ch.name if cached_ch else None
+
+    with _timed("render", format=fmt, messages=len(messages)):
+        if fmt in ("json", "jsonl"):
+            output = _render_json(
+                ref,
+                messages,
+                user_names,
+                channel_name,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_human(ref, messages, user_names)
+    with _timed("write_output", bytes=len(output)):
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    return 0
+
+
+def _show_channel(common: CommonArgs, channel: str, no_fetch: bool, last: str, fmt: str) -> int:
+    """Show all messages for a channel, fetching first if needed."""
+    oldest = _oldest_ts_from_last(last)
+    with _open_db(common) as conn:
+        messages = load_channel_messages(conn, channel)
+        if not messages and not no_fetch:
+            log.info("channel_not_cached_fetching", channel=channel)
+            if common.verbose:
+                print(
+                    f"fetching messages for {channel} from Slack...",
+                    file=sys.stderr,
+                )
+            from .cache import fetch_channel_messages
+
+            client = _build_client(common)
+            fetch_channel_messages(conn, client, channel, oldest=oldest)
+            messages = load_channel_messages(conn, channel)
+        with _timed("build_user_names"):
+            user_names = _build_user_names(conn, messages)
+        cached_ch = get_channel(conn, channel)
+        channel_name = cached_ch.name if cached_ch else None
+
+    with _timed("render", format=fmt, messages=len(messages)):
+        if fmt in ("json", "jsonl"):
+            output = _render_channel_json(
+                channel,
+                messages,
+                user_names,
+                channel_name,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_channel_human(channel, messages, user_names, channel_name)
+    with _timed("write_output", bytes=len(output)):
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    return 0
+
+
+@app.command
+def search(
+    query: Annotated[
+        str,
+        Parameter(help="Slack search query (same syntax as the Slack search box)."),
+    ],
+    *,
+    count: Annotated[int, Parameter(help="Maximum results per page (default: 20).")] = 20,
+    sort: Annotated[
+        Literal["score", "timestamp"],
+        Parameter(help="Sort matches by score or timestamp."),
+    ] = "timestamp",
+    sort_dir: Annotated[Literal["asc", "desc"], Parameter(help="Sort direction.")] = "desc",
+    full_threads: Annotated[
+        bool,
+        Parameter(help="Also fetch all replies for every thread a match belongs to."),
+    ] = False,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    json_output: JsonArg = False,
+    jsonl_output: JsonlArg = False,
+    verbose: VerboseArg = False,
+) -> int:
+    """Search Slack via search.messages and cache the matched messages/threads.
+
+    Search is inherently a live operation: every run hits the API. Every
+    matched message is cached under its ``(channel, thread_ts)`` so it can be
+    revisited later with `show`. Output is human-readable by default, JSON
+    with --json.
+    """
+    from .cache import fetch_search
+
+    common = _setup(db, api_base_url, verbose)
+    fmt = _output_format(json_output, jsonl_output)
+
+    log.debug("cmd_search_start", query=query)
+    client = _build_client(common)
+    with _open_db(common) as conn:
+        with _timed("fetch_search", query=query):
+            result = fetch_search(
+                conn,
+                client,
+                query=query,
+                count=count,
+                sort=sort,
+                sort_dir=sort_dir,
+                full_threads=full_threads,
+            )
+        matches = result.matches
+        log.debug("search_matches", count=len(matches))
+
+        user_ids = {m.get("user") for m in matches if m.get("user")}
+        channel_ids = {m.get("channel") for m in matches if m.get("channel")}
+        with _timed("build_user_names"):
+            user_names = load_user_display_names(conn, user_ids)
+        with _timed("build_channel_names"):
+            channel_names = _channel_id_names(conn, channel_ids)
+
+    with _timed("render", format=fmt, matches=len(matches)):
+        if fmt in ("json", "jsonl"):
+            output = _render_search_json(
+                query,
+                matches,
+                user_names,
+                channel_names,
+                indent=2 if fmt == "json" else None,
+            )
+        else:
+            output = _render_search_human(query, matches, user_names, channel_names)
+    with _timed("write_output", bytes=len(output)):
+        sys.stdout.write(output)
+        sys.stdout.flush()
+    print(
+        f"searched {query!r}: {len(matches)} match(es), {result.threads_touched} thread(s) cached",
+        file=sys.stderr,
+    )
+    return 0
+
+
+@app.command(name="fetch-users")
+def fetch_users(
+    *,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Fetch and cache every workspace user."""
+    from .cache import fetch_users
+
+    common = _setup(db, api_base_url, verbose)
+    client = _build_client(common)
+    with _open_db(common) as conn:
+        result = fetch_users(conn, client)
+    print(
+        f"processed {result.processed} users ({result.added} added, {result.total} total in db)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+@app.command(name="fetch-channels")
+def fetch_channels(
+    *,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Fetch and cache every visible conversation."""
+    from .cache import fetch_channels
+
+    common = _setup(db, api_base_url, verbose)
+    client = _build_client(common)
+    with _open_db(common) as conn:
+        result = fetch_channels(conn, client)
+    print(
+        f"processed {result.processed} channels ({result.added} added, {result.total} total in db)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+@app.command(name="show-users")
+def show_users(
+    *,
+    no_fetch: NoFetchArg = False,
+    json_output: JsonArg = False,
+    jsonl_output: JsonlArg = False,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Print cached users to stdout (human-readable by default)."""
+    common = _setup(db, api_base_url, verbose)
+    fmt = _output_format(json_output, jsonl_output)
+    with _open_db(common) as conn:
+        if not no_fetch and not load_users(conn):
+            from .cache import fetch_users
+
+            log.info("users_not_cached_fetching")
+            fetch_users(conn, _build_client(common))
+        users = load_users(conn)
+
+    if fmt in ("json", "jsonl"):
+        payload = {"user_count": len(users), "users": [asdict(u) for u in users]}
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
+        )
+    else:
+        sys.stdout.write(_render_users_human(users))
+    return 0
+
+
+@app.command(name="show-channels")
+def show_channels(
+    *,
+    no_fetch: NoFetchArg = False,
+    json_output: JsonArg = False,
+    jsonl_output: JsonlArg = False,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Print cached channels to stdout (human-readable by default)."""
+    common = _setup(db, api_base_url, verbose)
+    fmt = _output_format(json_output, jsonl_output)
+    with _open_db(common) as conn:
+        if not no_fetch and not load_channels(conn):
+            from .cache import fetch_channels
+
+            log.info("channels_not_cached_fetching")
+            fetch_channels(conn, _build_client(common))
+        channels = load_channels(conn)
+
+    if fmt in ("json", "jsonl"):
+        payload = {"channel_count": len(channels), "channels": [asdict(c) for c in channels]}
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
+        )
+    else:
+        sys.stdout.write(_render_channels_human(channels))
+    return 0
+
+
+@app.command
+def poll(
+    *,
+    channels: Annotated[
+        str,
+        Parameter(
+            required=True,
+            help="Comma-separated list of channels to poll. Each entry may be a "
+            "channel id (e.g. C001), a bare name (e.g. general), or a "
+            "'#'-prefixed name (e.g. #general). Names are resolved against the "
+            "cached channels (e.g. C001,general,#random).",
+        ),
+    ],
+    interval: Annotated[
+        str,
+        Parameter(help="Time between poll cycles (e.g. 5m, 10m, 1h; default: 5m)."),
+    ] = "5m",
+    last: Annotated[
+        str,
+        Parameter(
+            help="Lookback per cycle (e.g. 5m, 10m, 1h; default: 5m, use 'all' for full history).",
+        ),
+    ] = "5m",
+    full_threads: Annotated[
+        bool,
+        Parameter(help="Also fetch all thread replies for every threaded message."),
+    ] = False,
+    concurrency: Annotated[
+        int, Parameter(help="Maximum number of channels to fetch concurrently (default: 3).")
+    ] = 3,
+    json_output: Annotated[
+        bool, Parameter(name="--json", help="Emit per-cycle JSON summaries to stdout.")
+    ] = False,
+    db: DbArg = None,
+    api_base_url: ApiBaseUrlArg = None,
+    verbose: VerboseArg = False,
+) -> int:
+    """Poll channels concurrently in a loop for new messages."""
+    common = _setup(db, api_base_url, verbose)
+
+    resolved = _resolve_poll_channels(common, channels)
+    if not resolved:
         return 1
 
-    interval_delta = _parse_duration(args.interval)
+    interval_delta = _parse_duration(interval)
     if interval_delta is None:
         print("error: --interval must be a finite duration (not 'all')", file=sys.stderr)
         return 1
     interval_seconds = interval_delta.total_seconds()
 
-    concurrency = max(1, args.concurrency)
+    concurrency_value = max(1, concurrency)
 
     log.info(
         "poll_start",
-        channels=channels,
-        interval=args.interval,
-        last=args.last,
-        full_threads=args.full_threads,
-        concurrency=concurrency,
+        channels=resolved,
+        interval=interval,
+        last=last,
+        full_threads=full_threads,
+        concurrency=concurrency_value,
     )
     print(
-        f"polling {len(channels)} channel(s) every {args.interval} "
-        f"(lookback: {args.last}, full_threads: {args.full_threads}, "
-        f"concurrency: {concurrency})",
+        f"polling {len(resolved)} channel(s) every {interval} "
+        f"(lookback: {last}, full_threads: {full_threads}, "
+        f"concurrency: {concurrency_value})",
         file=sys.stderr,
     )
 
-    asyncio.run(_poll_loop(args, channels, interval_seconds, concurrency))
+    import asyncio
+
+    asyncio.run(
+        _poll_loop(
+            common,
+            resolved,
+            interval_seconds,
+            concurrency_value,
+            last,
+            full_threads,
+            json_output,
+        )
+    )
     return 0
 
 
 async def _poll_loop(
-    args: argparse.Namespace,
+    common: CommonArgs,
     channels: list[str],
     interval_seconds: float,
     concurrency: int,
+    last: str,
+    full_threads: bool,
+    json_output: bool,
 ) -> None:
     """Run the poll loop with async HTTP and a semaphore for concurrency."""
     import asyncio
@@ -831,7 +1026,7 @@ async def _poll_loop(
     from .config import load_api_base_url, load_credentials
     from .slack_api import DEFAULT_API_BASE, REQUEST_TIMEOUT
 
-    base_url = args.api_base_url or load_api_base_url() or DEFAULT_API_BASE
+    base_url = common.api_base_url or load_api_base_url() or DEFAULT_API_BASE
     try:
         credentials = load_credentials()
     except SystemExit:
@@ -855,7 +1050,7 @@ async def _poll_loop(
             while True:
                 cycle += 1
                 cycle_start = time.perf_counter()
-                oldest = _oldest_ts_from_last(args.last)
+                oldest = _oldest_ts_from_last(last)
 
                 async def fetch_one(
                     channel: str,
@@ -865,12 +1060,12 @@ async def _poll_loop(
                 ) -> dict[str, Any]:
                     async with semaphore:
                         try:
-                            with _open_db(args) as conn:
+                            with _open_db(common) as conn:
                                 result = await fetch_channel_messages_async(
                                     conn,
                                     client,
                                     channel,
-                                    full_threads=args.full_threads,
+                                    full_threads=full_threads,
                                     oldest=_oldest,
                                 )
                             log.info(
@@ -903,7 +1098,7 @@ async def _poll_loop(
                     file=sys.stderr,
                 )
 
-                if args.json:
+                if json_output:
                     payload = {
                         "cycle": cycle,
                         "elapsed_seconds": round(elapsed, 3),
@@ -920,181 +1115,9 @@ async def _poll_loop(
             print(f"\npoll stopped after {cycle} cycle(s)", file=sys.stderr)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="slack-cached",
-        description="Cache Slack threads to a local SQLite database.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    fetch = sub.add_parser(
-        "fetch",
-        help="Cache or refresh a Slack thread, or fetch all messages from a channel.",
-    )
-    _add_target_args(fetch)
-    fetch.add_argument(
-        "--full-threads",
-        action="store_true",
-        help="When fetching a channel, also fetch all replies for every thread.",
-    )
-    fetch.add_argument(
-        "--last",
-        type=str,
-        default="1d",
-        metavar="DURATION",
-        help="When fetching a channel, limit history to the given lookback "
-        "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
-    )
-    fetch.set_defaults(func=cmd_fetch)
-
-    show = sub.add_parser(
-        "show",
-        help="Print a cached thread or channel to stdout (human-readable by default).",
-    )
-    _add_target_args(show)
-    show.add_argument(
-        "--no-fetch",
-        action="store_true",
-        help="Do not auto-fetch when the thread or channel is not yet cached.",
-    )
-    _add_format_group(show)
-    show.add_argument(
-        "--last",
-        type=str,
-        default="1d",
-        metavar="DURATION",
-        help="When showing a channel, limit history to the given lookback "
-        "(e.g. 24h, 2d5h30m, 90m; default: 1d, use 'all' for full history).",
-    )
-    show.set_defaults(func=cmd_show)
-
-    search = sub.add_parser(
-        "search",
-        help="Search Slack via search.messages and cache the matched messages/threads.",
-    )
-    search.add_argument(
-        "query",
-        help="Slack search query (same syntax as the Slack search box).",
-    )
-    search.add_argument(
-        "--count",
-        type=int,
-        default=20,
-        metavar="N",
-        help="Maximum results per page (default: 20).",
-    )
-    search.add_argument(
-        "--sort",
-        default="timestamp",
-        choices=["score", "timestamp"],
-        help="Sort matches by 'score' or 'timestamp' (default: timestamp).",
-    )
-    search.add_argument(
-        "--sort-dir",
-        default="desc",
-        choices=["asc", "desc"],
-        help="Sort direction, 'asc' or 'desc' (default: desc).",
-    )
-    search.add_argument(
-        "--full-threads",
-        action="store_true",
-        help="Also fetch all replies for every thread a match belongs to.",
-    )
-    _add_db_args(search)
-    _add_format_group(search)
-    search.set_defaults(func=cmd_search)
-
-    fetch_users_cmd = sub.add_parser("fetch-users", help="Cache or refresh all workspace users.")
-    _add_db_args(fetch_users_cmd)
-    fetch_users_cmd.set_defaults(func=cmd_fetch_users)
-
-    fetch_channels_cmd = sub.add_parser(
-        "fetch-channels", help="Cache or refresh all visible channels."
-    )
-    _add_db_args(fetch_channels_cmd)
-    fetch_channels_cmd.set_defaults(func=cmd_fetch_channels)
-
-    show_users_cmd = sub.add_parser(
-        "show-users",
-        help="Print cached users to stdout (human-readable by default).",
-    )
-    _add_db_args(show_users_cmd)
-    show_users_cmd.add_argument(
-        "--no-fetch",
-        action="store_true",
-        help="Do not auto-fetch when users are not yet cached.",
-    )
-    _add_format_group(show_users_cmd)
-    show_users_cmd.set_defaults(func=cmd_show_users)
-
-    show_channels_cmd = sub.add_parser(
-        "show-channels",
-        help="Print cached channels to stdout (human-readable by default).",
-    )
-    _add_db_args(show_channels_cmd)
-    show_channels_cmd.add_argument(
-        "--no-fetch",
-        action="store_true",
-        help="Do not auto-fetch when channels are not yet cached.",
-    )
-    _add_format_group(show_channels_cmd)
-    show_channels_cmd.set_defaults(func=cmd_show_channels)
-
-    poll_cmd = sub.add_parser(
-        "poll",
-        help="Poll channels in a loop for new messages.",
-    )
-    _add_db_args(poll_cmd)
-    poll_cmd.add_argument(
-        "--channels",
-        required=True,
-        help="Comma-separated list of channels to poll. Each entry may be a "
-        "channel id (e.g. C001), a bare name (e.g. general), or a "
-        "'#'-prefixed name (e.g. #general). Names are resolved against the "
-        "cached channels (e.g. C001,general,#random).",
-    )
-    poll_cmd.add_argument(
-        "--interval",
-        type=str,
-        default="5m",
-        metavar="DURATION",
-        help="Time between poll cycles (e.g. 5m, 10m, 1h; default: 5m).",
-    )
-    poll_cmd.add_argument(
-        "--last",
-        type=str,
-        default="5m",
-        metavar="DURATION",
-        help="Lookback per cycle (e.g. 5m, 10m, 1h; default: 5m, use 'all' for full history).",
-    )
-    poll_cmd.add_argument(
-        "--full-threads",
-        action="store_true",
-        help="Also fetch all thread replies for every threaded message.",
-    )
-    poll_cmd.add_argument(
-        "--concurrency",
-        type=int,
-        default=3,
-        metavar="N",
-        help="Maximum number of channels to fetch concurrently (default: 3).",
-    )
-    poll_cmd.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit per-cycle JSON summaries to stdout.",
-    )
-    poll_cmd.set_defaults(func=cmd_poll)
-
-    return parser
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    _configure_logging(getattr(args, "verbose", False))
-    log.debug("dispatch", command=getattr(args, "command", None))
-    return args.func(args)
+    """Entry point used by tests and the ``slack-cached`` console script."""
+    return app(argv, result_action="return_int_as_exit_code_else_zero")
 
 
 if __name__ == "__main__":

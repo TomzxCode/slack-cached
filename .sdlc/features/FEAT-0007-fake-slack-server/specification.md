@@ -39,7 +39,7 @@ fake_slack.py
   |     +-- POST /api/chat.postMessage
   |
   +-- run_server() -> HTTPServer
-  +-- main() (CLI entry point with argparse)
+  +-- main() (CLI entry point with cyclopts)
 ```
 
 ## Data Models

@@ -3,14 +3,14 @@
 ## System Overview
 
 slack-cached is a single-process CLI tool with a layered architecture: CLI
-(argparse) at the top, a cache orchestration layer in the middle, and a
+(cyclopts) at the top, a cache orchestration layer in the middle, and a
 storage layer (SQLite) plus a Slack API client at the bottom.
 
 ```
 User
   |
   v
-cli.py (argparse subcommands)
+cli.py (cyclopts subcommands)
   |
   +-- cache.py (fetch/load orchestration)
   |     |
@@ -35,7 +35,7 @@ Testing / Development:
 
 | Component | Responsibility | Technology |
 |---|---|---|
-| cli.py | CLI entry point, argument parsing, output rendering | argparse, structlog |
+| cli.py | CLI entry point, argument parsing, output rendering | cyclopts, structlog |
 | cache.py | Fetch/load orchestration, incremental refresh, channel message fetching | dataclasses, structlog |
 | slack_api.py | Slack Web API client with pagination, rate-limit retry, configurable base URL | requests, structlog |
 | storage.py | SQLite schema management, CRUD operations, logging cursor | sqlite3, structlog |

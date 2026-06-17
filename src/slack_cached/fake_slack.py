@@ -37,7 +37,6 @@ Configuration parameters (``WorkspaceParams`` / CLI flags):
 
 from __future__ import annotations
 
-import argparse
 import base64
 import json
 import random
@@ -48,10 +47,11 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import parse_qs, urlparse
 
 import structlog
+from cyclopts import App, Parameter
 
 log = structlog.get_logger(__name__)
 
@@ -1679,70 +1679,57 @@ def run_server(
     return server
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="slack-fake-server",
-        description="Fake Slack API server with configurable, realistic workspace data.",
-    )
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
-    parser.add_argument("--port", type=int, default=8199, help="Port to listen on (default: 8199).")
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for data generation (default: 42)."
-    )
-    parser.add_argument(
-        "--num-users", type=int, default=20, help="Number of workspace members (default: 20)."
-    )
-    parser.add_argument(
-        "--num-channels",
-        type=int,
-        default=13,
-        help="Number of channels (default: 13).",
-    )
-    parser.add_argument(
-        "--num-threads",
-        type=int,
-        default=30,
-        help="Number of conversation threads (default: 30).",
-    )
-    parser.add_argument(
-        "--messages-per-thread",
-        default="3-12",
-        help="Message count range per thread, e.g. '3-12' or '5' (default: 3-12).",
-    )
-    parser.add_argument(
-        "--activity-ratio",
-        type=float,
-        default=0.6,
-        help="Fraction of users who actively participate (default: 0.6).",
-    )
-    parser.add_argument(
-        "--rate-limits",
-        action="store_true",
-        default=False,
-        help="Enable Slack-compatible rate limiting (disabled by default).",
-    )
-    parser.add_argument(
-        "--epoch-base",
-        default=None,
-        help="Base epoch timestamp for generated data. Accepts 'now', an ISO "
-        "datetime (e.g. '2025-06-01'), or a unix timestamp. "
-        "Default: 1704067200.0 (2024-01-01).",
-    )
+fake_server_app = App(
+    name="slack-fake-server",
+    help="Fake Slack API server with configurable, realistic workspace data.",
+    version="0.1.0",
+)
 
-    args = parser.parse_args(argv)
-    min_mpt, max_mpt = _parse_range_flag(args.messages_per_thread)
-    epoch_base = _parse_epoch_base(args.epoch_base)
+
+@fake_server_app.default
+def run_fake_server(
+    *,
+    host: Annotated[str, Parameter(help="Bind address (default: 127.0.0.1).")] = "127.0.0.1",
+    port: Annotated[int, Parameter(help="Port to listen on (default: 8199).")] = 8199,
+    seed: Annotated[int, Parameter(help="Random seed for data generation (default: 42).")] = 42,
+    num_users: Annotated[int, Parameter(help="Number of workspace members (default: 20).")] = 20,
+    num_channels: Annotated[int, Parameter(help="Number of channels (default: 13).")] = 13,
+    num_threads: Annotated[
+        int, Parameter(help="Number of conversation threads (default: 30).")
+    ] = 30,
+    messages_per_thread: Annotated[
+        str,
+        Parameter(help="Message count range per thread, e.g. '3-12' or '5' (default: 3-12)."),
+    ] = "3-12",
+    activity_ratio: Annotated[
+        float, Parameter(help="Fraction of users who actively participate (default: 0.6).")
+    ] = 0.6,
+    rate_limits: Annotated[
+        bool, Parameter(help="Enable Slack-compatible rate limiting (disabled by default).")
+    ] = False,
+    epoch_base: Annotated[
+        str | None,
+        Parameter(
+            help="Base epoch timestamp for generated data. Accepts 'now', an ISO "
+            "datetime (e.g. '2025-06-01'), or a unix timestamp. "
+            "Default: 1704067200.0 (2024-01-01).",
+        ),
+    ] = None,
+) -> int:
+    """Run the fake Slack API server until interrupted."""
+    min_mpt, max_mpt = _parse_range_flag(messages_per_thread)
+    parsed_epoch_base = _parse_epoch_base(epoch_base)
 
     params = WorkspaceParams(
-        seed=args.seed,
-        num_users=args.num_users,
-        num_channels=args.num_channels,
-        num_threads=args.num_threads,
+        seed=seed,
+        num_users=num_users,
+        num_channels=num_channels,
+        num_threads=num_threads,
         min_messages_per_thread=min_mpt,
         max_messages_per_thread=max_mpt,
-        activity_ratio=args.activity_ratio,
-        rate_limits=args.rate_limits,
-        epoch_base=epoch_base,
+        activity_ratio=activity_ratio,
+        rate_limits=rate_limits,
+        epoch_base=parsed_epoch_base,
     )
 
     structlog.configure(
@@ -1755,13 +1742,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
     )
 
-    server = run_server(host=args.host, port=args.port, params=params)
+    server = run_server(host=host, port=port, params=params)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("fake_slack_server_shutting_down")
         server.shutdown()
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point used by tests and the ``slack-fake-server`` console script."""
+    return fake_server_app(argv, result_action="return_int_as_exit_code_else_zero")
 
 
 if __name__ == "__main__":
