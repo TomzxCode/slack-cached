@@ -42,23 +42,18 @@ def _channel_id_names(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> d
     return names
 
 
-async def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
-    """Resolve a comma-separated --channels value to channel ids.
+async def _resolve_channels(common: CommonArgs, entries: Iterable[str]) -> list[str] | None:
+    """Resolve channel tokens (ids, bare names, or '#'-prefixed names) to ids.
 
-    Each entry may be a channel id (e.g. C0123456), a bare name (e.g. general),
-    or a '#'-prefixed name (e.g. #general). Names are resolved against the
-    cached channels; when a name is missing from the cache the channels are
-    fetched from Slack once and resolution is retried. Returns None and prints
-    an error when a name cannot be resolved.
+    Names are resolved against the cached channels; when a name is missing
+    from the cache the channels are fetched from Slack once and resolution is
+    retried. Returns None and prints an error when a name cannot be resolved.
     """
     # Imported via module reference so monkeypatch on _client._build_client works.
     from slack_cached.cli._internal import _client
 
-    entries = [e.strip().lstrip("#").strip() for e in raw.split(",")]
+    entries = [e.strip().lstrip("#").strip() for e in entries]
     entries = [e for e in entries if e]
-    if not entries:
-        print("error: --channels must contain at least one channel", file=sys.stderr)
-        return None
 
     resolved: list[str] = []
     names = [e for e in entries if not _is_channel_id(e)]
@@ -95,3 +90,32 @@ async def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | No
         )
         return None
     return resolved
+
+
+async def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
+    """Resolve a comma-separated --channels value to channel ids.
+
+    Each entry may be a channel id (e.g. C0123456), a bare name (e.g. general),
+    or a '#'-prefixed name (e.g. #general). Names are resolved against the
+    cached channels. Returns None and prints an error when no entries are
+    given or a name cannot be resolved.
+    """
+    entries = [e.strip() for e in raw.split(",")]
+    entries = [e for e in entries if e]
+    if not entries:
+        print("error: --channels must contain at least one channel", file=sys.stderr)
+        return None
+    return await _resolve_channels(common, entries)
+
+
+async def _resolve_channel(common: CommonArgs, token: str) -> str | None:
+    """Resolve a single channel token (id, bare name, or '#'-prefixed name).
+
+    Names are resolved against the cached channels; the cache is refreshed from
+    Slack once if the name is missing. Returns None and prints an error when
+    the name cannot be resolved.
+    """
+    resolved = await _resolve_channels(common, [token])
+    if not resolved:
+        return None
+    return resolved[0]

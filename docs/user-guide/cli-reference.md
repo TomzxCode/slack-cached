@@ -21,7 +21,7 @@ slack-cached fetch [URL] [--channel CHANNEL] [--ts TS] [--full-threads] [--last 
 | Argument | Description |
 |---|---|
 | `URL` | Slack thread permalink URL |
-| `--channel CHANNEL` | Channel ID (use without `--ts` for channel message fetch) |
+| `--channel CHANNEL` | Channel id (`C001`), bare name (`general`), or `#`-prefixed name (`#general`). Names are resolved against the cached channels. Use without `--ts` for channel message fetch. |
 | `--ts TS` | Thread root timestamp |
 | `--full-threads` | Also fetch all thread replies (channel fetch only) |
 | `--last DURATION` | Lookback period for channel fetch (default: `1d`) |
@@ -37,7 +37,7 @@ slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json | --jsonl] [--no-f
 | Argument | Description |
 |---|---|
 | `URL` | Slack thread permalink URL |
-| `--channel CHANNEL` | Channel ID (shows all channel messages without `--ts`) |
+| `--channel CHANNEL` | Channel id (`C001`), bare name (`general`), or `#`-prefixed name (`#general`). Names are resolved against the cached channels. Shows all channel messages without `--ts`. |
 | `--ts TS` | Thread root timestamp |
 | `--json` | Output as pretty-printed JSON |
 | `--jsonl` | Output as a single compact JSON line (mutually exclusive with `--json`) |

@@ -7,6 +7,7 @@ import structlog
 from cyclopts import Parameter
 
 from slack_cached.cli._internal import _client
+from slack_cached.cli._internal._channels import _resolve_channel
 from slack_cached.cli._internal._duration import _oldest_ts_from_last
 from slack_cached.cli._internal._format import _build_user_names, _format_ts
 from slack_cached.cli._internal._refs import _output_format, _resolve_ref
@@ -70,6 +71,11 @@ async def show(
     """
     common = _setup(db, api_base_url, verbose)
     fmt = _output_format(json_output, jsonl_output)
+
+    if channel:
+        channel = await _resolve_channel(common, channel)
+        if channel is None:
+            return 1
 
     if channel and not ts and not url:
         return await _show_channel(common, channel, no_fetch, last, fmt)

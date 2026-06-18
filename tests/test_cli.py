@@ -642,6 +642,131 @@ def test_show_channel_with_name(
     assert "general" in out
 
 
+def test_show_channel_resolves_bare_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show --channel <name> resolves the name to an id via the cached channels."""
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
+
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()  # clear seeding output
+
+    rc = cli.main(["show", "--channel", "general", "--db", str(db_path)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    # 'hello' is the message that FakeChannelClient serves for C1; reaching it
+    # proves the bare name was resolved to C1.
+    assert "hello" in out
+    assert "1 message(s)" in out
+
+
+def test_show_channel_resolves_hash_prefixed_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show --channel #<name> resolves the '#'-prefixed name to an id."""
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
+
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(["show", "--channel", "#general", "--db", str(db_path)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "hello" in out
+    assert "1 message(s)" in out
+
+
+def test_fetch_channel_resolves_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fetch --channel <name> resolves the name and fetches that channel."""
+    db_path = tmp_path / "cache.db"
+    client = FakeChannelClient(
+        messages=[{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
+
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(["fetch", "--channel", "general", "--db", str(db_path)])
+    assert rc == 0
+
+    err = capsys.readouterr().err
+    # The summary reports the resolved channel id, not the input name.
+    assert "for C1" in err
+
+
+def test_fetch_thread_resolves_channel_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fetch --channel <name> --ts <ts> resolves the name before fetching the thread."""
+
+    class FakeThreadClient:
+        async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+            # The resolver must have turned '#general' into the id 'C1'.
+            assert channel == "C1", f"expected resolved id C1, got {channel!r}"
+            yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
+
+        async def iter_channels(self, types="public_channel", limit=1000):
+            yield {"id": "C1", "name": "general", "is_private": False}
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: FakeThreadClient())
+
+    db_path = tmp_path / "cache.db"
+    assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+
+    rc = cli.main(
+        [
+            "fetch",
+            "--channel",
+            "#general",
+            "--ts",
+            "1700000000.000100",
+            "--db",
+            str(db_path),
+        ]
+    )
+    assert rc == 0
+
+
+def test_show_channel_unresolved_name_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show --channel <unknown> errors out and returns 1."""
+
+    class EmptyClient:
+        async def iter_channels(self, types="public_channel", limit=1000):
+            return
+            yield  # pragma: no cover - make this an async generator
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: EmptyClient())
+
+    db_path = tmp_path / "cache.db"
+    rc = cli.main(["show", "--channel", "#nope", "--db", str(db_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "could not resolve" in err
+    assert "nope" in err
+
+
 class FakeSearchClient:
     """Stub client returning fixed search matches."""
 
@@ -705,7 +830,8 @@ def test_search_human_output(
 
     err = captured.err
     assert "1 match(es)" in err
-    assert "thread(s) cached" in err
+    assert "1 thread(s) cached" in err
+    assert "1 message(s) cached" in err
 
 
 def test_search_json_output(

@@ -7,6 +7,7 @@ import structlog
 from cyclopts import Parameter
 
 from slack_cached.cli._internal import _client
+from slack_cached.cli._internal._channels import _resolve_channel
 from slack_cached.cli._internal._duration import _oldest_ts_from_last
 from slack_cached.cli._internal._refs import _resolve_ref
 from slack_cached.cli._internal._shared import (
@@ -47,6 +48,10 @@ async def fetch(
 ) -> int:
     """Cache or refresh a Slack thread, or fetch all messages from a channel."""
     common = _setup(db, api_base_url, verbose)
+    if channel:
+        channel = await _resolve_channel(common, channel)
+        if channel is None:
+            return 1
     if channel and not ts and not url:
         return await _fetch_channel_messages(common, channel, full_threads, last)
 

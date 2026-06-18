@@ -68,7 +68,11 @@ UrlArg = Annotated[
 ]
 ChannelArg = Annotated[
     str | None,
-    Parameter(help="Slack channel id, used with --ts."),
+    Parameter(
+        help="Slack channel id (e.g. C001), bare name (e.g. general), or "
+        "'#'-prefixed name (e.g. #general). Names are resolved against the "
+        "cached channels. Used with --ts, or alone to target a whole channel.",
+    ),
 ]
 TsArg = Annotated[
     str | None,
