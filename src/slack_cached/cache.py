@@ -120,13 +120,25 @@ class SearchFetchResult:
 
     ``matches`` is the raw list of search matches (each carrying its own
     ``channel``, ``ts`` and ``permalink``) so the caller can render them
-    without re-reading the cache. ``threads_touched`` is the number of distinct
-    threads that received at least one cached message.
+    without re-reading the cache.
+
+    Threads: ``threads_seen`` is every distinct thread touched on this run;
+    ``threads_new`` is the subset that received at least one newly inserted
+    or modified message. The difference is the threads whose contents were
+    already current in the cache.
+
+    Messages: ``messages_seen`` is every message passed to the cache (matches
+    in default mode, matches plus replies in ``--full-threads`` mode);
+    ``messages_new`` is the subset actually written. The difference is the
+    messages that were already current.
     """
 
     query: str
     matches: list[dict[str, Any]]
-    threads_touched: int
+    threads_seen: int
+    threads_new: int
+    messages_seen: int
+    messages_new: int
 
 
 async def fetch_thread(
@@ -330,16 +342,36 @@ async def fetch_search(
         msg["channel"] = _normalize_channel_id(msg.get("channel"))
 
     written = 0
+    seen = 0
     threads_touched: set[tuple[str, str]] = set()
+    threads_new: set[tuple[str, str]] = set()
 
-    with transaction(conn):
+    # In default mode the search match is the only source for the message, so
+    # cache each one directly. In --full-threads mode we skip this step:
+    # ``conversations.replies`` always returns the parent message too, and
+    # Slack decorates ``search.messages`` text with query-highlighting
+    # backticks that the replies endpoint does not. Caching both would
+    # oscillate every run.
+    if not full_threads:
+        with transaction(conn):
+            for msg in matches:
+                channel = msg.get("channel")
+                if not channel or not msg.get("ts"):
+                    continue
+                thread_ts = msg.get("thread_ts") or msg["ts"]
+                record_thread_refresh(conn, channel, thread_ts, None)
+                n = upsert_messages(conn, channel, thread_ts, [msg])
+                seen += 1
+                written += n
+                threads_touched.add((channel, thread_ts))
+                if n:
+                    threads_new.add((channel, thread_ts))
+    else:
         for msg in matches:
             channel = msg.get("channel")
             if not channel or not msg.get("ts"):
                 continue
             thread_ts = msg.get("thread_ts") or msg["ts"]
-            record_thread_refresh(conn, channel, thread_ts, None)
-            written += upsert_messages(conn, channel, thread_ts, [msg])
             threads_touched.add((channel, thread_ts))
 
     if full_threads:
@@ -357,25 +389,52 @@ async def fetch_search(
 
         ordered = sorted(threads_touched)
         results = await asyncio.gather(*(fetch_one(c, t) for c, t in ordered))
-        for (channel, thread_ts), replies in zip(ordered, results, strict=True):
-            if not replies:
+
+        # Build a quick lookup so we can fall back to the search match for any
+        # thread that ``conversations.replies`` returned nothing for (defensive
+        # - in practice replies always includes at least the parent).
+        match_by_thread: dict[tuple[str, str], dict[str, Any]] = {}
+        for msg in matches:
+            channel = msg.get("channel")
+            if not channel or not msg.get("ts"):
                 continue
-            latest = _latest_ts(replies)
+            thread_ts = msg.get("thread_ts") or msg["ts"]
+            match_by_thread.setdefault((channel, thread_ts), msg)
+
+        for (channel, thread_ts), replies in zip(ordered, results, strict=True):
+            latest = _latest_ts(replies) if replies else None
             with transaction(conn):
                 record_thread_refresh(conn, channel, thread_ts, latest)
-                written += upsert_messages(conn, channel, thread_ts, replies)
+                if replies:
+                    n = upsert_messages(conn, channel, thread_ts, replies)
+                    seen += len(replies)
+                else:
+                    # Fallback: cache the search match directly.
+                    fallback = match_by_thread.get((channel, thread_ts))
+                    if fallback is None:
+                        continue
+                    n = upsert_messages(conn, channel, thread_ts, [fallback])
+                    seen += 1
+                written += n
+                if n:
+                    threads_new.add((channel, thread_ts))
 
     log.info(
         "fetch_search_done",
         query=query,
         matches=len(matches),
-        written=written,
-        threads_touched=len(threads_touched),
+        threads_seen=len(threads_touched),
+        threads_new=len(threads_new),
+        messages_seen=seen,
+        messages_new=written,
     )
     return SearchFetchResult(
         query=query,
         matches=matches,
-        threads_touched=len(threads_touched),
+        threads_seen=len(threads_touched),
+        threads_new=len(threads_new),
+        messages_seen=seen,
+        messages_new=written,
     )
 
 

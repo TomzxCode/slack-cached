@@ -67,6 +67,80 @@ def test_upsert_replaces_existing_message(tmp_path: Path) -> None:
     assert loaded[0].text == "edited"
 
 
+def test_upsert_skips_unchanged_message(tmp_path: Path) -> None:
+    """A second upsert with the same stable content reports 0 writes."""
+    conn = connect(tmp_path / "cache.db")
+    record_thread_refresh(conn, "C1", "1700000000.000100", "1700000000.000100")
+    msg = [{"ts": "1700000000.000100", "user": "U1", "text": "hello"}]
+    assert upsert_messages(conn, "C1", "1700000000.000100", msg) == 1
+    # Identical second call.
+    assert upsert_messages(conn, "C1", "1700000000.000100", msg) == 0
+
+
+def test_upsert_ignores_blocks_drift_between_endpoints(tmp_path: Path) -> None:
+    """search.messages and conversations.replies decorate the same message
+    with different ``blocks`` (block_id drift, image-cache URLs in
+    attachments, etc.). The same message cached via both endpoints must be
+    recognized as identical so cache-hit detection works under --full-threads.
+    """
+    conn = connect(tmp_path / "cache.db")
+    record_thread_refresh(conn, "C1", "1700000000.000100", "1700000000.000100")
+
+    # What search.messages returns: blocks with one block_id, signed image URL.
+    search_shape = [
+        {
+            "ts": "1700000000.000100",
+            "user": "U1",
+            "text": "lol",
+            "channel": {"id": "C1", "name": "general"},
+            "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            "blocks": [{"type": "rich_text", "block_id": "abcd1", "elements": []}],
+            "attachments": [{"image_url": "https://img.example.com/a.png?sig=1"}],
+        }
+    ]
+    # What conversations.replies returns: no channel/permalink, different
+    # block_id, differently-signed image URL, plus team metadata.
+    replies_shape = [
+        {
+            "ts": "1700000000.000100",
+            "user": "U1",
+            "text": "lol",
+            "blocks": [{"type": "rich_text", "block_id": "efgh2", "elements": []}],
+            "attachments": [{"image_url": "https://img.example.com/a.png?sig=2"}],
+            "team": "T0",
+            "source_team": "T0",
+            "user_team": "T0",
+            "reply_count": 3,
+            "latest_reply": "1700000000.000400",
+        }
+    ]
+
+    # First upsert (search) reports 1 write.
+    assert upsert_messages(conn, "C1", "1700000000.000100", search_shape) == 1
+    # Second upsert (replies) of the same logical message reports 0 writes
+    # because the stable content (text, user, ts) is identical.
+    assert upsert_messages(conn, "C1", "1700000000.000100", replies_shape) == 0
+
+
+def test_upsert_detects_text_edit_under_stripped_fields(tmp_path: Path) -> None:
+    """An actual content change (text edited) is still reported even when
+    other volatile fields also differ between endpoints.
+    """
+    conn = connect(tmp_path / "cache.db")
+    record_thread_refresh(conn, "C1", "1700000000.000100", "1700000000.000100")
+    original = [{"ts": "1700000000.000100", "user": "U1", "text": "lol"}]
+    edited = [
+        {
+            "ts": "1700000000.000100",
+            "user": "U1",
+            "text": "lol (edited)",
+            "edited": {"ts": "1700000000.000200", "user": "U1"},
+        }
+    ]
+    assert upsert_messages(conn, "C1", "1700000000.000100", original) == 1
+    assert upsert_messages(conn, "C1", "1700000000.000100", edited) == 1
+
+
 def test_thread_state_missing_returns_none(tmp_path: Path) -> None:
     conn = connect(tmp_path / "cache.db")
     assert get_thread_state(conn, "C1", "1700000000.000100") is None

@@ -97,8 +97,14 @@ async def search(
     with _timed("write_output", bytes=len(output)):
         sys.stdout.write(output)
         sys.stdout.flush()
+    threads_existing = result.threads_seen - result.threads_new
+    messages_existing = result.messages_seen - result.messages_new
     print(
-        f"searched {query!r}: {len(matches)} match(es), {result.threads_touched} thread(s) cached",
+        f"searched {query!r}: {len(matches)} match(es), "
+        f"{result.threads_seen} thread(s) "
+        f"({threads_existing} existing, {result.threads_new} new), "
+        f"{result.messages_seen} message(s) "
+        f"({messages_existing} existing, {result.messages_new} new)",
         file=sys.stderr,
     )
     return 0

@@ -38,11 +38,33 @@ Add `--full-threads` to fetch all replies for every thread a match belongs to:
 slack-cached search "RFC" --full-threads
 ```
 
-The summary reports how many distinct threads were expanded:
+The summary reports the breakdown of threads and messages into ones already
+present in the cache versus ones newly written on this run:
 
 ```
-searched 'RFC': 12 match(es), 9 thread(s) cached
+searched 'RFC': 12 match(es), 9 thread(s) (0 existing, 9 new), 17 message(s) (0 existing, 17 new)
 ```
+
+Running the same command again while nothing changed reports every previously
+cached item as existing:
+
+```
+searched 'RFC': 12 match(es), 9 thread(s) (9 existing, 0 new), 17 message(s) (17 existing, 0 new)
+```
+
+Note: search is always a live API call against Slack. "existing" means the data
+we got back matched what was already in the local cache; it is not a true cache
+hit (we did not skip the Slack call).
+
+With `--full-threads`, the message count includes every fetched reply (parents
+plus thread replies), and the breakdown reflects those too. Slack decorates the
+same message slightly differently between `search.messages` and
+`conversations.replies` (different `blocks` ids, signed image URLs, team
+metadata, search-highlighted `text`, etc.); the comparison normalizes those
+away so the same message still counts as existing. If you ever see unexpectedly
+high "new" counts on a rerun, run with `--verbose` and look for
+`message_payload_diff` log lines, which show the field-level diff for every
+message that was considered changed.
 
 ## Paging and ordering
 

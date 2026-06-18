@@ -247,7 +247,20 @@ def upsert_messages(
     thread_ts: str,
     messages: Iterable[dict[str, Any]],
 ) -> int:
-    """Insert or replace messages for a thread; returns the count written."""
+    """Insert or replace messages for a thread; returns the number of rows
+    actually modified (new inserts plus updates whose payload changed).
+
+    The payload column holds the canonical JSON serialization of the message
+    limited to its stable content fields (see ``_MESSAGE_CONTENT_FIELDS``),
+    so the same message produces an identical string whether it arrived via
+    ``search.messages``, ``conversations.history`` or ``conversations.replies``.
+    Unchanged messages produce an identical string and are skipped by the
+    ``WHERE`` clause, leaving them out of ``rowcount``.
+    """
+    msg_list = list(messages)
+    if not msg_list:
+        return 0
+
     rows = [
         (
             channel,
@@ -255,19 +268,154 @@ def upsert_messages(
             msg["ts"],
             msg.get("user"),
             msg.get("text"),
-            json.dumps(msg, ensure_ascii=False, sort_keys=True),
+            _canonical_message_payload(msg),
         )
-        for msg in messages
+        for msg in msg_list
     ]
-    if not rows:
-        return 0
-    conn.executemany(
-        "INSERT OR REPLACE INTO messages "
+
+    stripped: set[str] = set()
+    for msg in msg_list:
+        stripped.update(k for k in msg if k not in _MESSAGE_CONTENT_FIELDS)
+    if stripped:
+        log.debug(
+            "upsert_messages_stripped_fields",
+            channel=channel,
+            thread_ts=thread_ts,
+            count=len(rows),
+            fields=sorted(stripped),
+        )
+
+    # When debug logging is on, surface the field-level diff between the
+    # incoming canonical payload and what is already cached. This makes cache
+    # oscillation against real Slack diagnosable with --verbose.
+    if log.is_enabled_for(10):  # logging.DEBUG
+        _log_canonical_diffs(conn, channel, thread_ts, rows)
+
+    cursor = conn.executemany(
+        "INSERT INTO messages "
         "(channel, thread_ts, ts, user, text, payload) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(channel, thread_ts, ts) DO UPDATE SET "
+        "  user = excluded.user, "
+        "  text = excluded.text, "
+        "  payload = excluded.payload "
+        "WHERE messages.payload IS NOT excluded.payload",
         rows,
     )
-    return len(rows)
+    return cursor.rowcount or 0
+
+
+_DIFF_VALUE_PREVIEW = 160
+
+
+def _log_canonical_diffs(
+    conn: sqlite3.Connection,
+    channel: str,
+    thread_ts: str,
+    rows: list[tuple[str, str, str, str | None, str | None, str]],
+) -> None:
+    """Log field-level diff between incoming rows and existing cache entries.
+
+    Runs only when debug logging is enabled. Compares the canonical payload
+    string of each incoming row against the existing cached row (if any) and
+    emits a ``message_payload_diff`` event with the field-level changes, so
+    cache oscillation between endpoints is observable.
+    """
+    ts_to_new = {r[2]: r[5] for r in rows}
+    if not ts_to_new:
+        return
+    placeholders = ",".join("?" * len(ts_to_new))
+    try:
+        existing = conn.execute(
+            f"SELECT ts, payload FROM messages "
+            f"WHERE channel = ? AND thread_ts = ? AND ts IN ({placeholders})",
+            (channel, thread_ts, *ts_to_new),
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    for row in existing:
+        ts = row["ts"]
+        old_payload = row["payload"]
+        new_payload = ts_to_new.get(ts)
+        if new_payload is None or old_payload == new_payload:
+            continue
+        try:
+            old = json.loads(old_payload)
+            new = json.loads(new_payload)
+        except (TypeError, ValueError):
+            continue
+        added = sorted(set(new) - set(old))
+        removed = sorted(set(old) - set(new))
+        changed = sorted(k for k in set(new) & set(old) if new[k] != old[k])
+        if not (added or removed or changed):
+            continue
+        log.debug(
+            "message_payload_diff",
+            channel=channel,
+            thread_ts=thread_ts,
+            ts=ts,
+            added=added,
+            removed=removed,
+            changed={
+                k: (
+                    _preview(old.get(k)),
+                    _preview(new.get(k)),
+                )
+                for k in changed
+            },
+        )
+
+
+def _preview(value: Any) -> str:
+    """Render a JSON-serializable preview of ``value`` for log output."""
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if len(rendered) > _DIFF_VALUE_PREVIEW:
+        return rendered[:_DIFF_VALUE_PREVIEW] + "..."
+    return rendered
+
+
+_MESSAGE_CONTENT_FIELDS = frozenset(
+    {
+        # Identity. We deliberately exclude ``type`` (Slack returns "message"
+        # from some endpoints and "im" from others for the same DM message),
+        # ``thread_ts`` and ``parent_user_id`` (present on ``conversations.*``
+        # but absent from ``search.messages`` for thread parents; ``thread_ts``
+        # is also part of the cache key), and ``edited`` (present on
+        # ``conversations.replies`` but absent from ``search.messages``).
+        # The actual edit is reflected in ``text``, so we still detect edits.
+        "subtype",
+        "ts",
+        # Authorship.
+        "user",
+        "bot_id",
+        "app_id",
+        # Content body. We intentionally exclude ``blocks``/``attachments``/
+        # ``files``/``reactions``/``bot_profile``/``icons``/``metadata``
+        # because they frequently contain URLs, image-cache tokens or list
+        # orderings that differ between ``search.messages`` and
+        # ``conversations.replies`` for the same message, which would defeat
+        # cache-hit detection. ``text`` already reflects edits. ``text`` IS
+        # also subject to search-highlighting drift (matched terms get wrapped
+        # in backticks by ``search.messages``); ``fetch_search`` avoids that
+        # by not caching matches directly when ``--full-threads`` is set.
+        "text",
+    }
+)
+
+
+def _canonical_message_payload(msg: dict[str, Any]) -> str:
+    """Serialize ``msg`` keeping only stable content fields, sorted/stable.
+
+    Slack decorates the same message differently depending on which endpoint
+    returned it (``channel``/``permalink`` from ``search.messages``, ``team``
+    metadata from ``conversations.*``, ``reply_count``/``latest_reply`` that
+    drifts as threads grow, per-user ``last_read``, signed URLs in
+    ``files``/``attachments``, etc.). Comparing on the full payload would
+    oscillate every run. Whitelisting only the stable, content-bearing fields
+    keeps the comparison stable across endpoints and over time.
+    """
+    canonical = {k: v for k, v in msg.items() if k in _MESSAGE_CONTENT_FIELDS}
+    return json.dumps(canonical, ensure_ascii=False, sort_keys=True)
 
 
 def record_thread_refresh(

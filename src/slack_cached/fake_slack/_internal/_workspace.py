@@ -1,6 +1,7 @@
 """Workspace container with pre-generated data and pagination helpers."""
 
 import random
+import re
 import time
 from typing import Any
 
@@ -16,6 +17,24 @@ from slack_cached.fake_slack._internal._generate import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+def _highlight_query_terms(text: str, terms: list[str]) -> str:
+    """Wrap each whole-word occurrence of a query term in backticks.
+
+    Mimics Slack's ``search.messages`` behavior of decorating the matched
+    query terms in the returned ``text``. Matching is case-insensitive and
+    respects word boundaries so partial matches inside other words are not
+    highlighted. Longer terms are processed first so a multi-word term wins
+    over its single-word sub-terms.
+    """
+    if not text or not terms:
+        return text
+    result = text
+    for term in sorted({t for t in terms if t}, key=len, reverse=True):
+        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        result = pattern.sub(lambda m: f"`{m.group(0)}`", result)
+    return result
 
 
 class Workspace:
@@ -156,10 +175,20 @@ class Workspace:
     ) -> tuple[list[dict[str, Any]], int, int]:
         """Return (page_matches, total_count, page_count) for a text search.
 
-        The search is a simple case-insensitive AND of the whitespace-separated
-        query terms against message text.  Each match is enriched with its
-        ``channel`` and a ``permalink`` so it looks like a real
-        ``search.messages`` response.
+        Mimics the shape of real Slack ``search.messages``:
+
+        - ``text`` is returned with each query term wrapped in backticks
+          (Slack's search-highlight markup). The same message fetched via
+          ``conversations.replies`` has plain text, so this drift is what
+          the canonical-payload comparison in ``storage.upsert_messages``
+          has to survive.
+        - ``channel`` is returned as an object ``{"id", "name"}`` rather
+          than the bare id used by ``conversations.*``.
+        - ``permalink``, ``channel_previous`` and ``channel_is_prev`` are
+          search-only fields.
+        - Thread parents come back without ``thread_ts`` or
+          ``parent_user_id`` (Slack omits them when ``ts == thread_ts``).
+        - ``edited`` is omitted; ``conversations.replies`` includes it.
         """
         terms = [t.lower() for t in query.split() if t]
         channel_names = {c["id"]: c["name"] for c in self.channels}
@@ -172,8 +201,10 @@ class Workspace:
                 if terms and not all(term in text for term in terms):
                     continue
                 match = dict(msg)
-                # Real ``search.messages`` returns ``channel`` as an object,
-                # not a bare id, so mirror that shape here.
+                # search.messages highlights matched query terms with backticks.
+                match["text"] = _highlight_query_terms(match.get("text", ""), terms)
+                # ``channel`` as object, plus permalink and channel-history
+                # metadata that conversations.* does not return.
                 match["channel"] = {"id": channel, "name": ch_name}
                 match["channel_previous"] = {"name": ch_name, "id": channel}
                 match["channel_is_prev"] = False
@@ -181,6 +212,12 @@ class Workspace:
                     f"https://acme.slack.com/archives/{channel}/"
                     f"p{msg['ts'].replace('.', '').ljust(16, '0')}"
                 )
+                # Real search.messages drops thread_ts/parent_user_id on
+                # parents and never surfaces ``edited``.
+                if match.get("thread_ts") == match.get("ts"):
+                    match.pop("thread_ts", None)
+                match.pop("parent_user_id", None)
+                match.pop("edited", None)
                 matches.append(match)
 
         reverse = sort_dir == "desc"

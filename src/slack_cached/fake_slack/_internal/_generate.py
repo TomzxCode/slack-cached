@@ -483,6 +483,13 @@ def _generate_threads(
             }
             if j > 0:
                 msg["parent_user_id"] = fake_messages[0]["user"]
+            # Some thread parents are edited. Real Slack surfaces the ``edited``
+            # field on conversations.replies/history but omits it from
+            # search.messages; mirroring that here exercises the canonical
+            # payload comparison in storage.upsert_messages.
+            if j == 0 and rng.random() < 0.25:
+                edit_ts = float(msg["ts"]) + rng.uniform(60, 3600)
+                msg["edited"] = {"ts": f"{edit_ts:.6f}", "user": speaker_id}
             fake_messages.append(msg)
 
         threads[(ch_id, thread_ts)] = fake_messages

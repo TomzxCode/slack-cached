@@ -312,7 +312,11 @@ def test_fetch_channel_messages_full_threads_fetches_replies(tmp_path: Path) -> 
 
     result = asyncio.run(fetch_channel_messages(conn, client, "C1", full_threads=True))
 
-    assert result.fetched_messages == 4
+    # 3 distinct writes: standalone, parent, reply1. The parent appears in
+    # both history and replies but is deduplicated by its canonical payload
+    # (reply_count/latest_reply are contextual metadata, stripped before
+    # comparison), so it is not double-counted.
+    assert result.fetched_messages == 3
     assert result.total_messages == 3
     assert result.threads_with_replies_fetched == 1
     history_calls = [c for c in client.calls if c["method"] == "history"]
@@ -406,7 +410,10 @@ def test_fetch_search_caches_matches_across_threads(tmp_path: Path) -> None:
     result = asyncio.run(fetch_search(conn, client, query="hello"))
 
     assert len(result.matches) == 2
-    assert result.threads_touched == 2
+    assert result.threads_seen == 2
+    assert result.threads_new == 2
+    assert result.messages_seen == 2
+    assert result.messages_new == 2
     assert client.search_calls[0]["query"] == "hello"
 
     # First match sits in a real thread, second is a standalone (no thread_ts).
@@ -437,9 +444,12 @@ def test_fetch_search_normalizes_object_channel(tmp_path: Path) -> None:
         ]
     )
 
-    result = fetch_search(conn, client, query="hello")
+    result = asyncio.run(fetch_search(conn, client, query="hello"))
 
-    assert result.threads_touched == 1
+    assert result.threads_seen == 1
+    assert result.threads_new == 1
+    assert result.messages_seen == 1
+    assert result.messages_new == 1
     # The match's channel is normalised in place to the bare id.
     assert result.matches[0]["channel"] == "C1"
     msgs = load_thread_messages(conn, "C1", "1700000000.000100")
@@ -475,7 +485,12 @@ def test_fetch_search_full_threads_expands_replies(tmp_path: Path) -> None:
     result = asyncio.run(fetch_search(conn, client, query="parent", full_threads=True))
 
     assert len(result.matches) == 1
-    assert result.threads_touched == 1
+    assert result.threads_seen == 1
+    assert result.threads_new == 1
+    # In --full-threads mode the match itself is not cached directly; the
+    # parent + reply arrive via conversations.replies, both new.
+    assert result.messages_seen == 2
+    assert result.messages_new == 2
     assert len(client.replies_calls) == 1
     assert client.replies_calls[0]["thread_ts"] == "1700000000.000100"
 
@@ -490,4 +505,207 @@ def test_fetch_search_no_matches_still_returns_empty(tmp_path: Path) -> None:
     result = asyncio.run(fetch_search(conn, client, query="nothing"))
 
     assert result.matches == []
-    assert result.threads_touched == 0
+    assert result.threads_seen == 0
+    assert result.threads_new == 0
+    assert result.messages_seen == 0
+    assert result.messages_new == 0
+
+
+def test_fetch_search_second_run_with_no_changes_reports_zero(tmp_path: Path) -> None:
+    """Re-running the same search reports 0 threads and 0 messages cached."""
+    conn = connect(tmp_path / "cache.db")
+    matches = [
+        {
+            "ts": "1700000000.000100",
+            "thread_ts": "1700000000.000100",
+            "user": "U1",
+            "text": "hello world",
+            "channel": "C1",
+            "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+        },
+        {
+            "ts": "1700000000.000200",
+            "user": "U2",
+            "text": "hello there",
+            "channel": "C2",
+            "permalink": "https://acme.slack.com/archives/C2/p1700000000000200",
+        },
+    ]
+    client = FakeSearchClient(matches=matches)
+
+    first = asyncio.run(fetch_search(conn, client, query="hello"))
+    assert first.threads_seen == 2
+    assert first.threads_new == 2
+    assert first.messages_seen == 2
+    assert first.messages_new == 2
+
+    # Second run sees identical payloads already in cache.
+    client = FakeSearchClient(matches=matches)
+    second = asyncio.run(fetch_search(conn, client, query="hello"))
+    assert len(second.matches) == 2
+    assert second.threads_seen == 2
+    assert second.threads_new == 0
+    assert second.messages_seen == 2
+    assert second.messages_new == 0
+
+
+def test_fetch_search_second_run_with_edited_message_reports_change(
+    tmp_path: Path,
+) -> None:
+    """A second run reports only the thread/message whose payload changed."""
+    conn = connect(tmp_path / "cache.db")
+
+    original = [
+        {
+            "ts": "1700000000.000100",
+            "thread_ts": "1700000000.000100",
+            "user": "U1",
+            "text": "hello world",
+            "channel": "C1",
+        },
+        {
+            "ts": "1700000000.000200",
+            "user": "U2",
+            "text": "hello there",
+            "channel": "C2",
+        },
+    ]
+    client = FakeSearchClient(matches=original)
+    asyncio.run(fetch_search(conn, client, query="hello"))
+
+    edited = [
+        {**original[0], "text": "hello world (edited)"},
+        original[1],
+    ]
+    client = FakeSearchClient(matches=edited)
+    result = asyncio.run(fetch_search(conn, client, query="hello"))
+
+    assert result.threads_seen == 2
+    assert result.threads_new == 1
+    assert result.messages_seen == 2
+    assert result.messages_new == 1
+    msgs = load_thread_messages(conn, "C1", "1700000000.000100")
+    assert msgs[0].text == "hello world (edited)"
+
+
+def test_fetch_search_full_threads_second_run_reports_zero(tmp_path: Path) -> None:
+    """With --full-threads, a second unchanged run reports 0 cached."""
+    conn = connect(tmp_path / "cache.db")
+    match = {
+        "ts": "1700000000.000100",
+        "thread_ts": "1700000000.000100",
+        "user": "U1",
+        "text": "parent",
+        "channel": "C1",
+    }
+    replies = {
+        ("C1", "1700000000.000100"): [
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "parent",
+            },
+            {"ts": "1700000000.000300", "user": "U2", "text": "reply"},
+        ],
+    }
+
+    first = asyncio.run(
+        fetch_search(
+            conn,
+            FakeSearchClient(matches=[match], thread_replies=replies),
+            query="parent",
+            full_threads=True,
+        )
+    )
+    assert first.threads_seen == 1
+    assert first.threads_new == 1
+    # Match is not cached directly in --full-threads mode; both messages
+    # arrive via replies, both new on the first run.
+    assert first.messages_seen == 2
+    assert first.messages_new == 2
+
+    second = asyncio.run(
+        fetch_search(
+            conn,
+            FakeSearchClient(matches=[match], thread_replies=replies),
+            query="parent",
+            full_threads=True,
+        )
+    )
+    assert second.threads_seen == 1
+    assert second.threads_new == 0
+    assert second.messages_seen == 2
+    assert second.messages_new == 0
+
+
+def test_fetch_search_full_threads_handles_endpoint_payload_drift(
+    tmp_path: Path,
+) -> None:
+    """Real Slack decorates the same message differently in search.messages
+    vs conversations.replies (different ``blocks``, signed URLs in
+    ``attachments``, ``team`` metadata, etc.). The second run must still
+    recognize every message as a cache hit so the user sees
+    ``0 message(s) cached`` rather than oscillating forever.
+    """
+    conn = connect(tmp_path / "cache.db")
+
+    # The same message as it appears through search.messages.
+    match = {
+        "ts": "1700000000.000100",
+        "thread_ts": "1700000000.000100",
+        "user": "U1",
+        "text": "lol",
+        "channel": "C1",
+        "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+        "blocks": [{"type": "rich_text", "block_id": "search1", "elements": []}],
+        "attachments": [{"image_url": "https://img.example.com/a.png?sig=search"}],
+        "team": "T0",
+    }
+    # The same message as it appears through conversations.replies (plus a
+    # reply). Note the different ``block_id``, differently-signed URL, and
+    # thread-metadata fields that only replies carries.
+    parent_via_replies = {
+        "ts": "1700000000.000100",
+        "thread_ts": "1700000000.000100",
+        "user": "U1",
+        "text": "lol",
+        "blocks": [{"type": "rich_text", "block_id": "replies1", "elements": []}],
+        "attachments": [{"image_url": "https://img.example.com/a.png?sig=replies"}],
+        "source_team": "T0",
+        "user_team": "T0",
+        "reply_count": 1,
+        "latest_reply": "1700000000.000300",
+    }
+    reply = {"ts": "1700000000.000300", "user": "U2", "text": "haha"}
+    replies = {("C1", "1700000000.000100"): [parent_via_replies, reply]}
+
+    first = asyncio.run(
+        fetch_search(
+            conn,
+            FakeSearchClient(matches=[match], thread_replies=replies),
+            query="lol",
+            full_threads=True,
+        )
+    )
+    # Initial run: matches aren't cached directly in --full-threads mode; both
+    # messages (parent + reply) arrive via replies and are new.
+    assert first.threads_seen == 1
+    assert first.threads_new == 1
+    assert first.messages_seen == 2
+    assert first.messages_new == 2
+
+    second = asyncio.run(
+        fetch_search(
+            conn,
+            FakeSearchClient(matches=[match], thread_replies=replies),
+            query="lol",
+            full_threads=True,
+        )
+    )
+    # The fix: skipping match-caching in --full-threads mode plus a stable
+    # whitelist means re-running reports cache hits for every reply.
+    assert second.threads_seen == 1
+    assert second.threads_new == 0
+    assert second.messages_seen == 2
+    assert second.messages_new == 0

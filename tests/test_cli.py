@@ -830,8 +830,8 @@ def test_search_human_output(
 
     err = captured.err
     assert "1 match(es)" in err
-    assert "1 thread(s) cached" in err
-    assert "1 message(s) cached" in err
+    assert "1 thread(s) (0 existing, 1 new)" in err
+    assert "1 message(s) (0 existing, 1 new)" in err
 
 
 def test_search_json_output(

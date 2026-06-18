@@ -598,6 +598,104 @@ class TestSearchMessages:
             lowered = (match.get("text") or "").lower()
             assert all(term in lowered for term in pair)
 
+    def test_search_highlights_query_terms_with_backticks(self, fake_server: str) -> None:
+        """``search.messages`` wraps each query term in backticks (mimics
+        real Slack's highlighting), while ``conversations.replies`` returns
+        the plain text. The canonical comparison in ``storage.upsert_messages``
+        has to survive this drift.
+        """
+        term = self._known_term()
+        search_data = _get(fake_server, "/api/search.messages", {"query": term})
+        match = search_data["messages"]["matches"][0]
+        # The query term appears wrapped in backticks in the search response.
+        assert f"`{term}`" in match["text"].lower() or any(
+            f"`{t}`" in match["text"].lower() for t in term.split()
+        )
+        # The same message fetched via conversations.replies is plain.
+        channel = match["channel"]["id"]
+        thread_ts = match["ts"]
+        replies = _get(
+            fake_server,
+            "/api/conversations.replies",
+            {"channel": channel, "ts": thread_ts},
+        )
+        for msg in replies["messages"]:
+            if msg["ts"] == match["ts"]:
+                assert "`" not in msg["text"]
+                break
+
+    def test_search_omits_thread_ts_for_thread_parents(self, fake_server: str) -> None:
+        """Real ``search.messages`` drops ``thread_ts`` on thread parents
+        (where it would equal ``ts``); ``conversations.replies`` keeps it.
+        """
+        term = self._known_term()
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        for match in data["messages"]["matches"]:
+            # Either thread_ts is absent, or it's a reply (ts != thread_ts).
+            if "thread_ts" in match:
+                assert match["thread_ts"] != match["ts"]
+
+    def test_search_omits_parent_user_id(self, fake_server: str) -> None:
+        term = self._known_term()
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        for match in data["messages"]["matches"]:
+            assert "parent_user_id" not in match
+
+    def test_search_omits_edited_field(self, fake_server: str) -> None:
+        """``search.messages`` does not surface ``edited``, even on messages
+        that ``conversations.replies`` reports as edited.
+        """
+        # Find a message that has ``edited`` set in the workspace.
+        ws = Workspace(seed=42)
+        edited_keys = [
+            (ch, ts)
+            for (ch, _ts), msgs in ws.threads.items()
+            for msg in msgs
+            if "edited" in msg
+            for ts in [msg["ts"]]
+        ]
+        if not edited_keys:
+            pytest.skip("no edited messages in workspace")
+        channel, ts = edited_keys[0]
+        # Find a query term that matches the edited message.
+        edited_msg = next(m for msgs in ws.threads.values() for m in msgs if m["ts"] == ts)
+        term = next(
+            (
+                tok.strip(".,!?:;\"'()-").lower()
+                for tok in edited_msg["text"].split()
+                if len(tok.strip(".,!?:;\"'()-")) >= 4
+            ),
+            None,
+        )
+        if term is None:
+            pytest.skip("edited message has no searchable token")
+
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        for match in data["messages"]["matches"]:
+            assert "edited" not in match
+
+        # And confirm conversations.replies DOES include it for the same msg.
+        replies = _get(
+            fake_server,
+            "/api/conversations.replies",
+            {"channel": channel, "ts": ts},
+        )
+        edited_via_replies = [m for m in replies["messages"] if m["ts"] == ts]
+        assert edited_via_replies
+        assert "edited" in edited_via_replies[0]
+
+    def test_search_response_includes_permalink_and_channel_object(self, fake_server: str) -> None:
+        """``search.messages`` decorates matches with ``permalink`` and an
+        object form of ``channel`` that ``conversations.*`` does not return.
+        """
+        term = self._known_term()
+        data = _get(fake_server, "/api/search.messages", {"query": term})
+        for match in data["messages"]["matches"]:
+            assert isinstance(match["channel"], dict)
+            assert "id" in match["channel"]
+            assert "name" in match["channel"]
+            assert match["permalink"].startswith("https://acme.slack.com/archives/")
+
 
 # ---------------------------------------------------------------------------
 # Integration: fetch_channel_messages against fake server
@@ -666,9 +764,9 @@ class TestFetchChannelMessagesIntegration:
                 )
             finally:
                 asyncio.run(client.aclose())
-            assert result.fetched_messages == expected_threads + expected_total
+            assert result.fetched_messages == expected_total
             assert result.total_messages == expected_total
-            assert result.threads_with_replies_fetched > 0
+            assert result.threads_with_replies_fetched == expected_threads
         finally:
             conn.close()
 
@@ -744,7 +842,7 @@ class TestFetchSearchIntegration:
             finally:
                 asyncio.run(client.aclose())
             assert len(result.matches) >= 1
-            assert result.threads_touched >= 1
+            assert result.threads_new >= 1
             for match in result.matches:
                 assert match.get("channel")
                 assert match.get("permalink")
@@ -783,6 +881,52 @@ class TestFetchSearchIntegration:
                     expanded = True
                     break
             assert expanded
+        finally:
+            conn.close()
+
+    def test_fetch_search_full_threads_second_run_reports_cache_hits(
+        self, fake_server: str, tmp_path: Path, workspace: Workspace
+    ) -> None:
+        """End-to-end regression: re-running ``search --full-threads`` against
+        the (now realistic) fake server reports cache hits on the second run.
+        The fake server mimics real Slack's drift between ``search.messages``
+        and ``conversations.replies`` (search highlighting in ``text``,
+        omitted ``thread_ts``/``parent_user_id``/``edited`` on parents); the
+        canonical comparison in ``storage.upsert_messages`` plus
+        ``fetch_search`` skipping match-caching in full-threads mode have to
+        absorb all of that.
+        """
+        import asyncio
+
+        from slack_cached.cache import fetch_search
+        from slack_cached.config import Credentials
+        from slack_cached.slack_api import SlackClient
+        from slack_cached.storage import connect
+
+        term = self._known_term(workspace)
+        conn = connect(tmp_path / "cache.db")
+        try:
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                first = asyncio.run(fetch_search(conn, client, query=term, full_threads=True))
+                second = asyncio.run(fetch_search(conn, client, query=term, full_threads=True))
+            finally:
+                asyncio.run(client.aclose())
+
+            assert first.matches
+            assert first.threads_new >= 1
+            assert first.messages_new >= 1
+
+            # The second run sees the same data unchanged: every previously
+            # cached message is a cache hit, nothing new is written.
+            assert len(second.matches) == len(first.matches)
+            assert second.threads_seen == first.threads_seen
+            assert second.threads_new == 0
+            assert second.messages_seen == first.messages_seen
+            assert second.messages_new == 0
         finally:
             conn.close()
 
