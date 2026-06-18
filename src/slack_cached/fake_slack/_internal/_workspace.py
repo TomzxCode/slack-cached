@@ -172,7 +172,9 @@ class Workspace:
                 if terms and not all(term in text for term in terms):
                     continue
                 match = dict(msg)
-                match["channel"] = channel
+                # Real ``search.messages`` returns ``channel`` as an object,
+                # not a bare id, so mirror that shape here.
+                match["channel"] = {"id": channel, "name": ch_name}
                 match["channel_previous"] = {"name": ch_name, "id": channel}
                 match["channel_is_prev"] = False
                 match["permalink"] = (

@@ -43,6 +43,22 @@ def _ts_to_iso(ts: str | None) -> str | None:
         return None
 
 
+def _normalize_channel_id(channel: Any) -> str | None:
+    """Return a bare channel id from a search match's ``channel`` field.
+
+    ``conversations.history``/``replies`` return ``channel`` as a bare id
+    string, but ``search.messages`` returns it as an object
+    (``{"id", "name", ...}``). Accept either and return the id, or None when it
+    cannot be determined.
+    """
+    if isinstance(channel, dict):
+        cid = channel.get("id")
+        return cid if isinstance(cid, str) and cid else None
+    if isinstance(channel, str):
+        return channel or None
+    return None
+
+
 @dataclass(frozen=True)
 class FetchResult:
     """Summary of what `fetch_thread` did."""
@@ -275,6 +291,13 @@ def fetch_search(
         client.iter_search_messages(query=query, count=count, sort=sort, sort_dir=sort_dir)
     )
     log.info("fetch_search_matches", query=query, matches=len(matches))
+
+    # search.messages returns ``channel`` as an object (``{"id", "name", ...}``)
+    # rather than the bare id used everywhere else, so normalise each match to a
+    # string channel id in place. Callers (caching below and rendering) can then
+    # treat ``channel`` uniformly.
+    for msg in matches:
+        msg["channel"] = _normalize_channel_id(msg.get("channel"))
 
     written = 0
     threads_touched: set[tuple[str, str]] = set()

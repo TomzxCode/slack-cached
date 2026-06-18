@@ -537,7 +537,8 @@ class TestSearchMessages:
         data = _get(fake_server, "/api/search.messages", {"query": term})
         channel_ids = {c["id"] for c in ws.channels}
         for match in data["messages"]["matches"]:
-            assert match["channel"] in channel_ids
+            # search.messages returns channel as an object, like real Slack.
+            assert match["channel"]["id"] in channel_ids
 
     def test_total_count_matches_workspace(self, fake_server: str) -> None:
         ws = Workspace(seed=42)

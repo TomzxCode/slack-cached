@@ -413,6 +413,32 @@ def test_fetch_search_caches_matches_across_threads(tmp_path: Path) -> None:
     assert state is not None
 
 
+def test_fetch_search_normalizes_object_channel(tmp_path: Path) -> None:
+    # Real ``search.messages`` returns ``channel`` as an object, not a bare id.
+    conn = connect(tmp_path / "cache.db")
+    client = FakeSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello world",
+                "channel": {"id": "C1", "name": "general"},
+                "permalink": "https://acme.slack.com/archives/C1/p1700000000000100",
+            },
+        ]
+    )
+
+    result = fetch_search(conn, client, query="hello")
+
+    assert result.threads_touched == 1
+    # The match's channel is normalised in place to the bare id.
+    assert result.matches[0]["channel"] == "C1"
+    msgs = load_thread_messages(conn, "C1", "1700000000.000100")
+    assert len(msgs) == 1
+    assert msgs[0].text == "hello world"
+
+
 def test_fetch_search_full_threads_expands_replies(tmp_path: Path) -> None:
     conn = connect(tmp_path / "cache.db")
     client = FakeSearchClient(
