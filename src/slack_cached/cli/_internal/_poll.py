@@ -26,12 +26,16 @@ async def _poll_loop(
 
     import httpx
 
-    from slack_cached.async_cache import fetch_channel_messages_async
-    from slack_cached.async_slack_api import AsyncSlackClient, RateLimitState
+    from slack_cached.cache import fetch_channel_messages
     from slack_cached.cli._internal import _client
     from slack_cached.cli._internal._duration import _oldest_ts_from_last
     from slack_cached.config import load_api_base_url, load_credentials
-    from slack_cached.slack_api import DEFAULT_API_BASE, REQUEST_TIMEOUT
+    from slack_cached.slack_api import (
+        DEFAULT_API_BASE,
+        REQUEST_TIMEOUT,
+        RateLimitState,
+        SlackClient,
+    )
 
     base_url = common.api_base_url or load_api_base_url() or DEFAULT_API_BASE
     try:
@@ -44,7 +48,7 @@ async def _poll_loop(
 
     rate_limit_state = RateLimitState()
     async with httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT)) as httpx_client:
-        client = AsyncSlackClient(
+        client = SlackClient(
             credentials,
             base_url=base_url,
             client=httpx_client,
@@ -68,7 +72,7 @@ async def _poll_loop(
                     async with semaphore:
                         try:
                             with _client._open_db(common) as conn:
-                                result = await fetch_channel_messages_async(
+                                result = await fetch_channel_messages(
                                     conn,
                                     client,
                                     channel,

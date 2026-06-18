@@ -26,7 +26,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command
-def search(
+async def search(
     query: Annotated[
         str,
         Parameter(help="Slack search query (same syntax as the Slack search box)."),
@@ -61,27 +61,27 @@ def search(
     fmt = _output_format(json_output, jsonl_output)
 
     log.debug("cmd_search_start", query=query)
-    client = _client._build_client(common)
-    with _client._open_db(common) as conn:
-        with _timed("fetch_search", query=query):
-            result = fetch_search(
-                conn,
-                client,
-                query=query,
-                count=count,
-                sort=sort,
-                sort_dir=sort_dir,
-                full_threads=full_threads,
-            )
-        matches = result.matches
-        log.debug("search_matches", count=len(matches))
+    async with _client._open_client(common) as client:
+        with _client._open_db(common) as conn:
+            with _timed("fetch_search", query=query):
+                result = await fetch_search(
+                    conn,
+                    client,
+                    query=query,
+                    count=count,
+                    sort=sort,
+                    sort_dir=sort_dir,
+                    full_threads=full_threads,
+                )
+            matches = result.matches
+            log.debug("search_matches", count=len(matches))
 
-        user_ids = {m.get("user") for m in matches if m.get("user")}
-        channel_ids = {m.get("channel") for m in matches if m.get("channel")}
-        with _timed("build_user_names"):
-            user_names = load_user_display_names(conn, user_ids)
-        with _timed("build_channel_names"):
-            channel_names = _channel_id_names(conn, channel_ids)
+            user_ids = {m.get("user") for m in matches if m.get("user")}
+            channel_ids = {m.get("channel") for m in matches if m.get("channel")}
+            with _timed("build_user_names"):
+                user_names = load_user_display_names(conn, user_ids)
+            with _timed("build_channel_names"):
+                channel_names = _channel_id_names(conn, channel_ids)
 
     with _timed("render", format=fmt, matches=len(matches)):
         if fmt in ("json", "jsonl"):

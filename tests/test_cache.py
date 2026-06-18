@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -33,18 +34,19 @@ class FakeClient:
         self._batches = batches
         self.calls: list[dict[str, Any]] = []
 
-    def iter_thread_replies(
+    async def iter_thread_replies(
         self,
         channel: str,
         thread_ts: str,
         oldest: str | None = None,
         limit: int = 200,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         self.calls.append(
             {"channel": channel, "thread_ts": thread_ts, "oldest": oldest, "limit": limit}
         )
         batch = self._batches.pop(0) if self._batches else []
-        yield from batch
+        for msg in batch:
+            yield msg
 
 
 def _msg(ts: str, text: str = "hi", user: str = "U1") -> dict[str, Any]:
@@ -63,7 +65,7 @@ def test_fetch_thread_initial_full_fetch(tmp_path: Path) -> None:
         ]
     )
 
-    result = fetch_thread(conn, client, ref)
+    result = asyncio.run(fetch_thread(conn, client, ref))
 
     assert result.incremental is False
     assert result.fetched_messages == 2
@@ -85,8 +87,8 @@ def test_fetch_thread_incremental_uses_latest_reply(tmp_path: Path) -> None:
         ]
     )
 
-    fetch_thread(conn, client, ref)
-    result = fetch_thread(conn, client, ref)
+    asyncio.run(fetch_thread(conn, client, ref))
+    result = asyncio.run(fetch_thread(conn, client, ref))
 
     assert result.incremental is True
     assert client.calls[1]["oldest"] == "1700000000.000200"
@@ -112,8 +114,8 @@ def test_fetch_thread_incremental_with_no_new_messages_preserves_state(
         ]
     )
 
-    fetch_thread(conn, client, ref)
-    result = fetch_thread(conn, client, ref)
+    asyncio.run(fetch_thread(conn, client, ref))
+    result = asyncio.run(fetch_thread(conn, client, ref))
 
     assert result.incremental is True
     assert result.fetched_messages == 0
@@ -134,8 +136,8 @@ def test_fetch_thread_updates_edited_message(tmp_path: Path) -> None:
         ]
     )
 
-    fetch_thread(conn, client, ref)
-    fetch_thread(conn, client, ref)
+    asyncio.run(fetch_thread(conn, client, ref))
+    asyncio.run(fetch_thread(conn, client, ref))
 
     messages = load_thread(conn, ref)
     assert len(messages) == 1
@@ -153,13 +155,15 @@ class FakeListClient:
         self._users = users or []
         self._channels = channels or []
 
-    def iter_users(self, limit: int = 1000) -> Iterator[dict[str, Any]]:
-        yield from self._users
+    async def iter_users(self, limit: int = 1000) -> AsyncIterator[dict[str, Any]]:
+        for u in self._users:
+            yield u
 
-    def iter_channels(
+    async def iter_channels(
         self, types: str = "public_channel", limit: int = 1000
-    ) -> Iterator[dict[str, Any]]:
-        yield from self._channels
+    ) -> AsyncIterator[dict[str, Any]]:
+        for c in self._channels:
+            yield c
 
 
 class FakeChannelClient:
@@ -174,29 +178,31 @@ class FakeChannelClient:
         self._thread_replies = thread_replies or {}
         self.calls: list[dict[str, Any]] = []
 
-    def iter_channel_history(
+    async def iter_channel_history(
         self,
         channel: str,
         oldest: str | None = None,
         latest: str | None = None,
         limit: int = 200,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         self.calls.append(
             {"method": "history", "channel": channel, "oldest": oldest, "latest": latest}
         )
-        yield from self._history
+        for msg in self._history:
+            yield msg
 
-    def iter_thread_replies(
+    async def iter_thread_replies(
         self,
         channel: str,
         thread_ts: str,
         oldest: str | None = None,
         limit: int = 200,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         self.calls.append(
             {"method": "replies", "channel": channel, "thread_ts": thread_ts, "oldest": oldest}
         )
-        yield from self._thread_replies.get(thread_ts, [])
+        for msg in self._thread_replies.get(thread_ts, []):
+            yield msg
 
 
 def test_fetch_users_caches_all(tmp_path: Path) -> None:
@@ -208,7 +214,7 @@ def test_fetch_users_caches_all(tmp_path: Path) -> None:
         ]
     )
 
-    result = fetch_users(conn, client)
+    result = asyncio.run(fetch_users(conn, client))
 
     assert result.processed == 2
     assert result.added == 2
@@ -228,7 +234,7 @@ def test_fetch_channels_caches_all(tmp_path: Path) -> None:
         ]
     )
 
-    result = fetch_channels(conn, client)
+    result = asyncio.run(fetch_channels(conn, client))
 
     assert result.processed == 2
     assert result.added == 2
@@ -243,10 +249,10 @@ def test_fetch_users_is_idempotent(tmp_path: Path) -> None:
     conn = connect(tmp_path / "cache.db")
     client = FakeListClient(users=[{"id": "U1", "name": "alice"}])
 
-    first = fetch_users(conn, client)
+    first = asyncio.run(fetch_users(conn, client))
     assert first.added == 1
 
-    result = fetch_users(conn, client)
+    result = asyncio.run(fetch_users(conn, client))
     assert result.processed == 1
     assert result.added == 0
     assert result.total == 1
@@ -268,7 +274,7 @@ def test_fetch_channel_messages_stores_top_level_only(tmp_path: Path) -> None:
         ],
     )
 
-    result = fetch_channel_messages(conn, client, "C1")
+    result = asyncio.run(fetch_channel_messages(conn, client, "C1"))
 
     assert result.fetched_messages == 3
     assert result.total_messages == 3
@@ -304,7 +310,7 @@ def test_fetch_channel_messages_full_threads_fetches_replies(tmp_path: Path) -> 
         },
     )
 
-    result = fetch_channel_messages(conn, client, "C1", full_threads=True)
+    result = asyncio.run(fetch_channel_messages(conn, client, "C1", full_threads=True))
 
     assert result.fetched_messages == 4
     assert result.total_messages == 3
@@ -326,7 +332,7 @@ def test_fetch_channel_messages_standalone_messages_use_own_ts_as_thread_ts(
         ],
     )
 
-    fetch_channel_messages(conn, client, "C1")
+    asyncio.run(fetch_channel_messages(conn, client, "C1"))
 
     state = get_thread_state(conn, "C1", "1700000000.000100")
     assert state is not None
@@ -350,27 +356,29 @@ class FakeSearchClient:
         self.search_calls: list[dict[str, Any]] = []
         self.replies_calls: list[dict[str, Any]] = []
 
-    def iter_search_messages(
+    async def iter_search_messages(
         self,
         query: str,
         count: int = 20,
         sort: str = "timestamp",
         sort_dir: str = "desc",
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         self.search_calls.append(
             {"query": query, "count": count, "sort": sort, "sort_dir": sort_dir}
         )
-        yield from self._matches
+        for m in self._matches:
+            yield m
 
-    def iter_thread_replies(
+    async def iter_thread_replies(
         self,
         channel: str,
         thread_ts: str,
         oldest: str | None = None,
         limit: int = 200,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any]]:
         self.replies_calls.append({"channel": channel, "thread_ts": thread_ts, "oldest": oldest})
-        yield from self._thread_replies.get((channel, thread_ts), [])
+        for msg in self._thread_replies.get((channel, thread_ts), []):
+            yield msg
 
 
 def test_fetch_search_caches_matches_across_threads(tmp_path: Path) -> None:
@@ -395,7 +403,7 @@ def test_fetch_search_caches_matches_across_threads(tmp_path: Path) -> None:
         ]
     )
 
-    result = fetch_search(conn, client, query="hello")
+    result = asyncio.run(fetch_search(conn, client, query="hello"))
 
     assert len(result.matches) == 2
     assert result.threads_touched == 2
@@ -464,7 +472,7 @@ def test_fetch_search_full_threads_expands_replies(tmp_path: Path) -> None:
         },
     )
 
-    result = fetch_search(conn, client, query="parent", full_threads=True)
+    result = asyncio.run(fetch_search(conn, client, query="parent", full_threads=True))
 
     assert len(result.matches) == 1
     assert result.threads_touched == 1
@@ -479,7 +487,7 @@ def test_fetch_search_no_matches_still_returns_empty(tmp_path: Path) -> None:
     conn = connect(tmp_path / "cache.db")
     client = FakeSearchClient(matches=[])
 
-    result = fetch_search(conn, client, query="nothing")
+    result = asyncio.run(fetch_search(conn, client, query="nothing"))
 
     assert result.matches == []
     assert result.threads_touched == 0

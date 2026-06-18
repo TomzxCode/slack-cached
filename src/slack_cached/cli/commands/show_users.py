@@ -25,7 +25,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command(name="show-users")
-def show_users(
+async def show_users(
     *,
     no_fetch: NoFetchArg = False,
     json_output: JsonArg = False,
@@ -42,7 +42,8 @@ def show_users(
             from slack_cached.cache import fetch_users
 
             log.info("users_not_cached_fetching")
-            fetch_users(conn, _client._build_client(common))
+            async with _client._open_client(common) as client:
+                await fetch_users(conn, client)
         users = load_users(conn)
 
     if fmt in ("json", "jsonl"):

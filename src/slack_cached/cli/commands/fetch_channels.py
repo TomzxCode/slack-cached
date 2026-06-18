@@ -7,7 +7,7 @@ from slack_cached.cli._internal._shared import ApiBaseUrlArg, DbArg, VerboseArg,
 
 
 @app.command(name="fetch-channels")
-def fetch_channels(
+async def fetch_channels(
     *,
     db: DbArg = None,
     api_base_url: ApiBaseUrlArg = None,
@@ -17,9 +17,9 @@ def fetch_channels(
     from slack_cached.cache import fetch_channels
 
     common = _setup(db, api_base_url, verbose)
-    client = _client._build_client(common)
-    with _client._open_db(common) as conn:
-        result = fetch_channels(conn, client)
+    async with _client._open_client(common) as client:
+        with _client._open_db(common) as conn:
+            result = await fetch_channels(conn, client)
     print(
         f"processed {result.processed} channels ({result.added} added, {result.total} total in db)",
         file=sys.stderr,

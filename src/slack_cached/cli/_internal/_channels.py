@@ -42,7 +42,7 @@ def _channel_id_names(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> d
     return names
 
 
-def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
+async def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
     """Resolve a comma-separated --channels value to channel ids.
 
     Each entry may be a channel id (e.g. C0123456), a bare name (e.g. general),
@@ -74,8 +74,8 @@ def _resolve_poll_channels(common: CommonArgs, raw: str) -> list[str] | None:
     with _client._open_db(common) as conn:
         name_to_id = _channel_name_index(conn)
         if any(n not in name_to_id for n in names):
-            client = _client._build_client(common)
-            fetch_channels(conn, client)
+            async with _client._open_client(common) as client:
+                await fetch_channels(conn, client)
             name_to_id = _channel_name_index(conn)
 
         unresolved: list[str] = []

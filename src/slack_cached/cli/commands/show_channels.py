@@ -25,7 +25,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command(name="show-channels")
-def show_channels(
+async def show_channels(
     *,
     no_fetch: NoFetchArg = False,
     json_output: JsonArg = False,
@@ -42,7 +42,8 @@ def show_channels(
             from slack_cached.cache import fetch_channels
 
             log.info("channels_not_cached_fetching")
-            fetch_channels(conn, _client._build_client(common))
+            async with _client._open_client(common) as client:
+                await fetch_channels(conn, client)
         channels = load_channels(conn)
 
     if fmt in ("json", "jsonl"):

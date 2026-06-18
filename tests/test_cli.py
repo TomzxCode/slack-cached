@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from slack_cached import cache as cache_module
 from slack_cached import cli
 from slack_cached.cache import FetchResult
 from slack_cached.config import Credentials as Creds
@@ -21,7 +20,7 @@ def _populate_single_message(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> 
     """Cache a single-message thread via a stub client."""
 
     class FakeClient:
-        def iter_thread_replies(
+        async def iter_thread_replies(
             self,
             channel: str,
             thread_ts: str,
@@ -30,8 +29,10 @@ def _populate_single_message(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> 
         ):
             yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
 
+        async def aclose(self) -> None:
+            pass
+
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeClient())
-    monkeypatch.setattr(cache_module, "SlackClient", FakeClient, raising=False)
 
     rc = cli.main(
         [
@@ -88,12 +89,15 @@ def test_show_renders_user_name_when_cached(
 
     # Cache a user whose id matches the message author (U1).
     class FakeUsers:
-        def iter_users(self, limit: int = 1000):
+        async def iter_users(self, limit: int = 1000):
             yield {
                 "id": "U1",
                 "name": "alice",
                 "real_name": "Alice Smith",
             }
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeUsers())
     assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
@@ -208,7 +212,7 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     calls: list[str | None] = []
 
     class FakeClient:
-        def iter_thread_replies(
+        async def iter_thread_replies(
             self,
             channel: str,
             thread_ts: str,
@@ -217,6 +221,9 @@ def test_fetch_with_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         ):
             calls.append(oldest)
             yield {"ts": thread_ts, "user": "U1", "text": "root"}
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeClient())
 
@@ -248,11 +255,14 @@ def test_fetch_result_dataclass_fields() -> None:
 class FakeListClient:
     """Stub client returning fixed user/channel lists."""
 
-    def iter_users(self, limit: int = 1000):
+    async def iter_users(self, limit: int = 1000):
         yield {"id": "U1", "name": "alice", "real_name": "Alice Smith"}
 
-    def iter_channels(self, types: str = "public_channel", limit: int = 1000):
+    async def iter_channels(self, types: str = "public_channel", limit: int = 1000):
         yield {"id": "C1", "name": "general", "is_private": False}
+
+    async def aclose(self) -> None:
+        pass
 
 
 def test_fetch_users_then_show(
@@ -367,14 +377,19 @@ class FakeChannelClient:
         self._messages = messages or []
         self._thread_replies = thread_replies or {}
 
-    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
-        yield from self._messages
+    async def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+        for m in self._messages:
+            yield m
 
-    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
-        yield from self._thread_replies.get(thread_ts, [])
+    async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        for m in self._thread_replies.get(thread_ts, []):
+            yield m
 
-    def iter_channels(self, types="public_channel", limit=1000):
+    async def iter_channels(self, types="public_channel", limit=1000):
         yield {"id": "C1", "name": "general", "is_private": False}
+
+    async def aclose(self) -> None:
+        pass
 
 
 def test_fetch_channel_messages_basic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -445,12 +460,17 @@ class FakeChannelClientWithHistory:
         self._messages = messages or []
         self.oldest_seen: str | None = "unset"
 
-    def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
+    async def iter_channel_history(self, channel, oldest=None, latest=None, limit=200):
         self.oldest_seen = oldest
-        yield from self._messages
+        for m in self._messages:
+            yield m
 
-    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
-        return iter([])
+    async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        return
+        yield  # pragma: no cover - make this an async generator
+
+    async def aclose(self) -> None:
+        pass
 
 
 def test_fetch_channel_default_last_is_one_day(
@@ -583,8 +603,11 @@ def test_show_channel_without_ts_uses_cached(
     assert rc == 0
 
     class NoCallClient:
-        def iter_channel_history(self, *a, **kw):
+        async def iter_channel_history(self, *a, **kw):
             raise AssertionError("should not fetch")
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: NoCallClient())
 
@@ -627,7 +650,7 @@ class FakeSearchClient:
         self._thread_replies = thread_replies or {}
         self.search_calls = []
 
-    def iter_search_messages(
+    async def iter_search_messages(
         self,
         query,
         count=20,
@@ -637,10 +660,15 @@ class FakeSearchClient:
         self.search_calls.append(
             {"query": query, "count": count, "sort": sort, "sort_dir": sort_dir}
         )
-        yield from self._matches
+        for m in self._matches:
+            yield m
 
-    def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
-        yield from self._thread_replies.get((channel, thread_ts), [])
+    async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+        for m in self._thread_replies.get((channel, thread_ts), []):
+            yield m
+
+    async def aclose(self) -> None:
+        pass
 
 
 def test_search_human_output(
@@ -818,11 +846,14 @@ def test_search_renders_cached_user_and_channel_names(
     db_path = tmp_path / "cache.db"
 
     class SeedClient:
-        def iter_users(self, limit: int = 1000):
+        async def iter_users(self, limit: int = 1000):
             yield {"id": "U1", "name": "alice", "real_name": "Alice Smith"}
 
-        def iter_channels(self, types="public_channel", limit=1000):
+        async def iter_channels(self, types="public_channel", limit=1000):
             yield {"id": "C1", "name": "general", "is_private": False}
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: SeedClient())
     assert cli.main(["fetch-users", "--db", str(db_path)]) == 0
@@ -871,16 +902,16 @@ class FakeAsyncPollClient:
 
 
 def _patch_poll(monkeypatch, fake_client_cls, cycle_limit=1):
-    """Patch asyncio.sleep and AsyncSlackClient for poll tests.
+    """Patch asyncio.sleep and SlackClient for poll tests.
 
     fake_client_cls is a class (not instance) whose __init__ accepts the
-    same args as AsyncSlackClient.
+    same args as SlackClient.
     """
     import asyncio as _asyncio
 
     import httpx
 
-    from slack_cached import async_slack_api
+    from slack_cached import slack_api
 
     monkeypatch.setattr(
         "slack_cached.config.load_credentials",
@@ -907,7 +938,7 @@ def _patch_poll(monkeypatch, fake_client_cls, cycle_limit=1):
 
     monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
-    monkeypatch.setattr(async_slack_api, "AsyncSlackClient", fake_client_cls)
+    monkeypatch.setattr(slack_api, "SlackClient", fake_client_cls)
 
 
 def test_poll_single_cycle(
@@ -1035,9 +1066,12 @@ def test_poll_resolves_channel_names(
     db_path = tmp_path / "cache.db"
 
     class ChannelsClient:
-        def iter_channels(self, types="public_channel", limit=1000):
+        async def iter_channels(self, types="public_channel", limit=1000):
             yield {"id": "C1", "name": "general", "is_private": False}
             yield {"id": "C2", "name": "random", "is_private": False}
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: ChannelsClient())
     assert cli.main(["fetch-channels", "--db", str(db_path)]) == 0
@@ -1082,9 +1116,12 @@ def test_poll_unresolved_channel_name_errors(
     db_path = tmp_path / "cache.db"
 
     class EmptyClient:
-        def iter_channels(self, types="public_channel", limit=1000):
+        async def iter_channels(self, types="public_channel", limit=1000):
             return
-            yield
+            yield  # pragma: no cover - make this an async generator
+
+        async def aclose(self) -> None:
+            pass
 
     monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: EmptyClient())
     _patch_poll(monkeypatch, FakeAsyncPollClient, cycle_limit=1)

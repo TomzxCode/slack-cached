@@ -21,7 +21,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command
-def poll(
+async def poll(
     *,
     channels: Annotated[
         str,
@@ -60,7 +60,7 @@ def poll(
     """Poll channels concurrently in a loop for new messages."""
     common = _setup(db, api_base_url, verbose)
 
-    resolved = _resolve_poll_channels(common, channels)
+    resolved = await _resolve_poll_channels(common, channels)
     if not resolved:
         return 1
 
@@ -87,17 +87,13 @@ def poll(
         file=sys.stderr,
     )
 
-    import asyncio
-
-    asyncio.run(
-        _poll_loop(
-            common,
-            resolved,
-            interval_seconds,
-            concurrency_value,
-            last,
-            full_threads,
-            json_output,
-        )
+    await _poll_loop(
+        common,
+        resolved,
+        interval_seconds,
+        concurrency_value,
+        last,
+        full_threads,
+        json_output,
     )
     return 0

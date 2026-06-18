@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
-import requests
 import structlog
 
 from slack_cached.fake_slack import Workspace, WorkspaceParams
@@ -41,7 +41,7 @@ def fake_server():
 
 
 def _get(base_url: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    resp = requests.get(f"{base_url}{path}", params=params, timeout=5)
+    resp = httpx.get(f"{base_url}{path}", params=params, timeout=5)
     resp.raise_for_status()
     return resp.json()
 
@@ -243,7 +243,7 @@ class TestConversationsReplies:
             assert float(msg["ts"]) >= float(mid_ts)
 
     def test_nonexistent_thread_returns_error(self, fake_server: str) -> None:
-        resp = requests.get(
+        resp = httpx.get(
             f"{fake_server}/api/conversations.replies",
             params={"channel": "C99NOTREAL", "ts": "9999999999.000000"},
             timeout=5,
@@ -285,7 +285,7 @@ class TestConversationsReplies:
 
 class TestUnknownEndpoint:
     def test_returns_404(self, fake_server: str) -> None:
-        resp = requests.get(f"{fake_server}/api/unknown.method", timeout=5)
+        resp = httpx.get(f"{fake_server}/api/unknown.method", timeout=5)
         assert resp.status_code == 404
         data = resp.json()
         assert data["ok"] is False
@@ -612,6 +612,8 @@ class TestFetchChannelMessagesIntegration:
     def test_fetch_top_level_only(
         self, fake_server: str, tmp_path: Path, workspace: Workspace
     ) -> None:
+        import asyncio
+
         from slack_cached.cache import fetch_channel_messages
         from slack_cached.config import Credentials
         from slack_cached.slack_api import SlackClient
@@ -620,13 +622,16 @@ class TestFetchChannelMessagesIntegration:
         channel = next(ch_id for ch_id, _ in workspace.threads)
         expected_threads = sum(1 for ch_id, _ in workspace.threads if ch_id == channel)
 
-        client = SlackClient(
-            Credentials(token="xoxb-fake", cookie=None),
-            base_url=f"{fake_server}/api",
-        )
         conn = connect(tmp_path / "cache.db")
         try:
-            result = fetch_channel_messages(conn, client, channel)
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                result = asyncio.run(fetch_channel_messages(conn, client, channel))
+            finally:
+                asyncio.run(client.aclose())
             assert result.fetched_messages == expected_threads
             assert result.total_messages == expected_threads
             assert result.threads_with_replies_fetched == 0
@@ -636,6 +641,8 @@ class TestFetchChannelMessagesIntegration:
     def test_fetch_full_threads(
         self, fake_server: str, tmp_path: Path, workspace: Workspace
     ) -> None:
+        import asyncio
+
         from slack_cached.cache import fetch_channel_messages
         from slack_cached.config import Credentials
         from slack_cached.slack_api import SlackClient
@@ -647,13 +654,18 @@ class TestFetchChannelMessagesIntegration:
             len(msgs) for (ch_id, _ts), msgs in workspace.threads.items() if ch_id == channel
         )
 
-        client = SlackClient(
-            Credentials(token="xoxb-fake", cookie=None),
-            base_url=f"{fake_server}/api",
-        )
         conn = connect(tmp_path / "cache.db")
         try:
-            result = fetch_channel_messages(conn, client, channel, full_threads=True)
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                result = asyncio.run(
+                    fetch_channel_messages(conn, client, channel, full_threads=True)
+                )
+            finally:
+                asyncio.run(client.aclose())
             assert result.fetched_messages == expected_threads + expected_total
             assert result.total_messages == expected_total
             assert result.threads_with_replies_fetched > 0
@@ -663,6 +675,8 @@ class TestFetchChannelMessagesIntegration:
     def test_fetch_then_show_thread(
         self, fake_server: str, tmp_path: Path, workspace: Workspace
     ) -> None:
+        import asyncio
+
         from slack_cached.cache import fetch_channel_messages, load_thread
         from slack_cached.config import Credentials
         from slack_cached.slack_api import SlackClient
@@ -671,13 +685,16 @@ class TestFetchChannelMessagesIntegration:
 
         (channel, thread_ts), thread_msgs = next(iter(workspace.threads.items()))
 
-        client = SlackClient(
-            Credentials(token="xoxb-fake", cookie=None),
-            base_url=f"{fake_server}/api",
-        )
         conn = connect(tmp_path / "cache.db")
         try:
-            fetch_channel_messages(conn, client, channel)
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                asyncio.run(fetch_channel_messages(conn, client, channel))
+            finally:
+                asyncio.run(client.aclose())
             ref = ThreadRef(channel=channel, thread_ts=thread_ts)
             cached = load_thread(conn, ref)
             assert len(cached) == 1
@@ -708,19 +725,24 @@ class TestFetchSearchIntegration:
     def test_fetch_search_caches_matches(
         self, fake_server: str, tmp_path: Path, workspace: Workspace
     ) -> None:
+        import asyncio
+
         from slack_cached.cache import fetch_search
         from slack_cached.config import Credentials
         from slack_cached.slack_api import SlackClient
         from slack_cached.storage import connect
 
         term = self._known_term(workspace)
-        client = SlackClient(
-            Credentials(token="xoxb-fake", cookie=None),
-            base_url=f"{fake_server}/api",
-        )
         conn = connect(tmp_path / "cache.db")
         try:
-            result = fetch_search(conn, client, query=term)
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                result = asyncio.run(fetch_search(conn, client, query=term))
+            finally:
+                asyncio.run(client.aclose())
             assert len(result.matches) >= 1
             assert result.threads_touched >= 1
             for match in result.matches:
@@ -732,19 +754,24 @@ class TestFetchSearchIntegration:
     def test_fetch_search_full_threads_then_show(
         self, fake_server: str, tmp_path: Path, workspace: Workspace
     ) -> None:
+        import asyncio
+
         from slack_cached.cache import fetch_search
         from slack_cached.config import Credentials
         from slack_cached.slack_api import SlackClient
         from slack_cached.storage import connect, load_thread_messages
 
         term = self._known_term(workspace)
-        client = SlackClient(
-            Credentials(token="xoxb-fake", cookie=None),
-            base_url=f"{fake_server}/api",
-        )
         conn = connect(tmp_path / "cache.db")
         try:
-            result = fetch_search(conn, client, query=term, full_threads=True)
+            client = SlackClient(
+                Credentials(token="xoxb-fake", cookie=None),
+                base_url=f"{fake_server}/api",
+            )
+            try:
+                result = asyncio.run(fetch_search(conn, client, query=term, full_threads=True))
+            finally:
+                asyncio.run(client.aclose())
             # At least one matched thread should now have more than the single
             # search match cached (i.e. its replies were expanded).
             expanded = False
@@ -846,7 +873,7 @@ def rate_limited_server():
 
 class TestRateLimitedServer:
     def test_normal_requests_succeed(self, rate_limited_server: str) -> None:
-        resp = requests.get(
+        resp = httpx.get(
             f"{rate_limited_server}/api/users.list",
             params={"limit": "5"},
             timeout=5,
@@ -857,8 +884,8 @@ class TestRateLimitedServer:
     def test_returns_429_when_limit_exceeded(self, rate_limited_server: str) -> None:
         url = f"{rate_limited_server}/api/users.list"
         for _ in range(20):
-            requests.get(url, params={"limit": "1"}, timeout=5)
-        resp = requests.get(url, params={"limit": "1"}, timeout=5)
+            httpx.get(url, params={"limit": "1"}, timeout=5)
+        resp = httpx.get(url, params={"limit": "1"}, timeout=5)
         assert resp.status_code == 429
         data = resp.json()
         assert data["ok"] is False
@@ -868,12 +895,12 @@ class TestRateLimitedServer:
 
     def test_rate_limit_is_per_endpoint(self, rate_limited_server: str) -> None:
         for _ in range(20):
-            requests.get(f"{rate_limited_server}/api/users.list", params={"limit": "1"}, timeout=5)
-        resp_users = requests.get(
+            httpx.get(f"{rate_limited_server}/api/users.list", params={"limit": "1"}, timeout=5)
+        resp_users = httpx.get(
             f"{rate_limited_server}/api/users.list", params={"limit": "1"}, timeout=5
         )
         assert resp_users.status_code == 429
-        resp_channels = requests.get(
+        resp_channels = httpx.get(
             f"{rate_limited_server}/api/conversations.list", params={"limit": "1"}, timeout=5
         )
         assert resp_channels.status_code == 200
@@ -954,7 +981,7 @@ class TestEpochBase:
 
 class TestPostMessage:
     def test_post_new_thread_via_api(self, fake_server: str) -> None:
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": "C0001", "text": "hello from post"},
             timeout=5,
@@ -967,7 +994,7 @@ class TestPostMessage:
         assert data["message"]["thread_ts"] == data["ts"]
 
     def test_posted_thread_appears_in_history(self, fake_server: str) -> None:
-        post = requests.post(
+        post = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": "C0001", "text": "new thread msg"},
             timeout=5,
@@ -982,7 +1009,7 @@ class TestPostMessage:
 
         keys = list(FakeSlackHandler.workspace.threads.keys())
         ch, thread_ts = keys[0]
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": ch, "text": "a reply", "thread_ts": thread_ts},
             timeout=5,
@@ -994,7 +1021,7 @@ class TestPostMessage:
         assert data["message"]["parent_user_id"] is not None
 
     def test_post_reply_to_nonexistent_thread(self, fake_server: str) -> None:
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": "C0001", "text": "ghost", "thread_ts": "9999999999.000000"},
             timeout=5,
@@ -1003,7 +1030,7 @@ class TestPostMessage:
         assert resp.json()["error"] == "thread_not_found"
 
     def test_post_without_channel_returns_error(self, fake_server: str) -> None:
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"text": "no channel"},
             timeout=5,
@@ -1011,7 +1038,7 @@ class TestPostMessage:
         assert resp.status_code == 400
 
     def test_post_without_text_returns_error(self, fake_server: str) -> None:
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": "C0001"},
             timeout=5,
@@ -1019,7 +1046,7 @@ class TestPostMessage:
         assert resp.status_code == 400
 
     def test_post_message_with_custom_user(self, fake_server: str) -> None:
-        resp = requests.post(
+        resp = httpx.post(
             f"{fake_server}/api/chat.postMessage",
             data={"channel": "C0001", "text": "bot says hi", "user": "U0099"},
             timeout=5,

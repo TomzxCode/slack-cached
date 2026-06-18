@@ -1,12 +1,16 @@
-"""High-level cache operations for slack-cached.
+"""High-level async cache operations for slack-cached.
 
-`fetch_thread` decides whether to do a full or incremental fetch based on
-existing cache state, calls the Slack API, and writes the results back to
-SQLite.
+``fetch_thread`` decides whether to do a full or incremental fetch based on
+existing cache state, calls the Slack API concurrently, and writes the results
+back to SQLite. SQLite writes remain synchronous since they are fast and
+happen within a single event loop.
 
-`load_thread` reads a cached thread back out for display.
+``load_thread`` reads a cached thread back out for display (pure DB read).
 """
 
+from __future__ import annotations
+
+import asyncio
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -59,9 +63,25 @@ def _normalize_channel_id(channel: Any) -> str | None:
     return None
 
 
+def _latest_ts(messages: list[dict[str, Any]]) -> str | None:
+    """Return the highest 'ts' in messages, treated as a float, or None."""
+    best: tuple[float, str] | None = None
+    for msg in messages:
+        ts = msg.get("ts")
+        if not ts:
+            continue
+        try:
+            value = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if best is None or value > best[0]:
+            best = (value, ts)
+    return best[1] if best else None
+
+
 @dataclass(frozen=True)
 class FetchResult:
-    """Summary of what `fetch_thread` did."""
+    """Summary of what ``fetch_thread`` did."""
 
     channel: str
     thread_ts: str
@@ -74,9 +94,9 @@ class FetchResult:
 class ListFetchResult:
     """Summary of a bulk fetch of users or channels.
 
-    `processed` is how many records were received from Slack and written.
-    `added` is how many of those were new rows in the database (the rest were
-    updates to existing rows). `total` is the row count after the fetch.
+    ``processed`` is how many records were received from Slack and written.
+    ``added`` is how many of those were new rows in the database (the rest were
+    updates to existing rows). ``total`` is the row count after the fetch.
     """
 
     processed: int
@@ -86,7 +106,7 @@ class ListFetchResult:
 
 @dataclass(frozen=True)
 class ChannelFetchResult:
-    """Summary of what `fetch_channel_messages` did."""
+    """Summary of what ``fetch_channel_messages`` did."""
 
     channel: str
     fetched_messages: int
@@ -96,11 +116,11 @@ class ChannelFetchResult:
 
 @dataclass(frozen=True)
 class SearchFetchResult:
-    """Summary of what `fetch_search` did.
+    """Summary of what ``fetch_search`` did.
 
-    `matches` is the raw list of search matches (each carrying its own
+    ``matches`` is the raw list of search matches (each carrying its own
     ``channel``, ``ts`` and ``permalink``) so the caller can render them
-    without re-reading the cache. `threads_touched` is the number of distinct
+    without re-reading the cache. ``threads_touched`` is the number of distinct
     threads that received at least one cached message.
     """
 
@@ -109,7 +129,7 @@ class SearchFetchResult:
     threads_touched: int
 
 
-def fetch_thread(
+async def fetch_thread(
     conn: sqlite3.Connection,
     client: SlackClient,
     ref: ThreadRef,
@@ -136,13 +156,14 @@ def fetch_thread(
         oldest_iso=_ts_to_iso(oldest),
     )
 
-    new_messages: list[dict[str, Any]] = list(
-        client.iter_thread_replies(
+    new_messages: list[dict[str, Any]] = [
+        msg
+        async for msg in client.iter_thread_replies(
             channel=ref.channel,
             thread_ts=ref.thread_ts,
             oldest=oldest,
         )
-    )
+    ]
 
     latest_reply = _latest_ts(new_messages)
     if latest_reply is None and state is not None:
@@ -177,7 +198,7 @@ def load_thread(conn: sqlite3.Connection, ref: ThreadRef) -> list[CachedMessage]
     return load_thread_messages(conn, ref.channel, ref.thread_ts)
 
 
-def fetch_channel_messages(
+async def fetch_channel_messages(
     conn: sqlite3.Connection,
     client: SlackClient,
     channel: str,
@@ -189,7 +210,7 @@ def fetch_channel_messages(
     By default only top-level messages are fetched via conversations.history
     (standalone messages and thread parents, but not thread replies).  When
     *full_threads* is True, every thread that has replies is also fetched in
-    full via conversations.replies.
+    full via conversations.replies, concurrently.
 
     *oldest* limits the history scan to messages with ts >= oldest (epoch
     seconds as a string).  When None, the entire channel history is fetched.
@@ -202,9 +223,9 @@ def fetch_channel_messages(
         oldest_iso=_ts_to_iso(oldest),
     )
 
-    history: list[dict[str, Any]] = list(
-        client.iter_channel_history(channel=channel, oldest=oldest)
-    )
+    history: list[dict[str, Any]] = [
+        msg async for msg in client.iter_channel_history(channel=channel, oldest=oldest)
+    ]
     log.info("fetch_channel_history_done", channel=channel, count=len(history))
 
     written = 0
@@ -226,8 +247,14 @@ def fetch_channel_messages(
         )
         log.info("fetch_channel_threads_start", channel=channel, thread_count=len(parent_tss))
 
-        for thread_ts in parent_tss:
-            replies = list(client.iter_thread_replies(channel=channel, thread_ts=thread_ts))
+        async def fetch_thread_replies(thread_ts: str) -> list[dict[str, Any]]:
+            return [
+                msg
+                async for msg in client.iter_thread_replies(channel=channel, thread_ts=thread_ts)
+            ]
+
+        results = await asyncio.gather(*(fetch_thread_replies(ts) for ts in parent_tss))
+        for thread_ts, replies in zip(parent_tss, results, strict=True):
             if not replies:
                 continue
             latest = _latest_ts(replies)
@@ -258,7 +285,7 @@ def fetch_channel_messages(
     )
 
 
-def fetch_search(
+async def fetch_search(
     conn: sqlite3.Connection,
     client: SlackClient,
     query: str,
@@ -287,9 +314,12 @@ def fetch_search(
         full_threads=full_threads,
     )
 
-    matches: list[dict[str, Any]] = list(
-        client.iter_search_messages(query=query, count=count, sort=sort, sort_dir=sort_dir)
-    )
+    matches: list[dict[str, Any]] = [
+        match
+        async for match in client.iter_search_messages(
+            query=query, count=count, sort=sort, sort_dir=sort_dir
+        )
+    ]
     log.info("fetch_search_matches", query=query, matches=len(matches))
 
     # search.messages returns ``channel`` as an object (``{"id", "name", ...}``)
@@ -318,8 +348,16 @@ def fetch_search(
             query=query,
             thread_count=len(threads_touched),
         )
-        for channel, thread_ts in sorted(threads_touched):
-            replies = list(client.iter_thread_replies(channel=channel, thread_ts=thread_ts))
+
+        async def fetch_one(channel: str, thread_ts: str) -> list[dict[str, Any]]:
+            return [
+                msg
+                async for msg in client.iter_thread_replies(channel=channel, thread_ts=thread_ts)
+            ]
+
+        ordered = sorted(threads_touched)
+        results = await asyncio.gather(*(fetch_one(c, t) for c, t in ordered))
+        for (channel, thread_ts), replies in zip(ordered, results, strict=True):
             if not replies:
                 continue
             latest = _latest_ts(replies)
@@ -341,11 +379,11 @@ def fetch_search(
     )
 
 
-def fetch_users(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResult:
+async def fetch_users(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResult:
     """Fetch every workspace user from Slack and cache them."""
     log.info("fetch_users_start")
     before = count_users(conn)
-    users: list[dict[str, Any]] = list(client.iter_users())
+    users: list[dict[str, Any]] = [u async for u in client.iter_users()]
 
     with transaction(conn):
         processed = upsert_users(conn, users)
@@ -356,11 +394,11 @@ def fetch_users(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResul
     return ListFetchResult(processed=processed, added=added, total=total)
 
 
-def fetch_channels(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResult:
+async def fetch_channels(conn: sqlite3.Connection, client: SlackClient) -> ListFetchResult:
     """Fetch every visible conversation from Slack and cache them."""
     log.info("fetch_channels_start")
     before = count_channels(conn)
-    channels: list[dict[str, Any]] = list(client.iter_channels())
+    channels: list[dict[str, Any]] = [c async for c in client.iter_channels()]
 
     with transaction(conn):
         processed = upsert_channels(conn, channels)
@@ -369,19 +407,3 @@ def fetch_channels(conn: sqlite3.Connection, client: SlackClient) -> ListFetchRe
     added = total - before
     log.info("fetch_channels_done", processed=processed, added=added, total=total)
     return ListFetchResult(processed=processed, added=added, total=total)
-
-
-def _latest_ts(messages: list[dict[str, Any]]) -> str | None:
-    """Return the highest 'ts' in messages, treated as a float, or None."""
-    best: tuple[float, str] | None = None
-    for msg in messages:
-        ts = msg.get("ts")
-        if not ts:
-            continue
-        try:
-            value = float(ts)
-        except (TypeError, ValueError):
-            continue
-        if best is None or value > best[0]:
-            best = (value, ts)
-    return best[1] if best else None

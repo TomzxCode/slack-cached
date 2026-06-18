@@ -7,7 +7,7 @@ from slack_cached.cli._internal._shared import ApiBaseUrlArg, DbArg, VerboseArg,
 
 
 @app.command(name="fetch-users")
-def fetch_users(
+async def fetch_users(
     *,
     db: DbArg = None,
     api_base_url: ApiBaseUrlArg = None,
@@ -17,9 +17,9 @@ def fetch_users(
     from slack_cached.cache import fetch_users
 
     common = _setup(db, api_base_url, verbose)
-    client = _client._build_client(common)
-    with _client._open_db(common) as conn:
-        result = fetch_users(conn, client)
+    async with _client._open_client(common) as client:
+        with _client._open_db(common) as conn:
+            result = await fetch_users(conn, client)
     print(
         f"processed {result.processed} users ({result.added} added, {result.total} total in db)",
         file=sys.stderr,

@@ -25,7 +25,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command
-def fetch(
+async def fetch(
     url: UrlArg = None,
     *,
     channel: ChannelArg = None,
@@ -48,14 +48,14 @@ def fetch(
     """Cache or refresh a Slack thread, or fetch all messages from a channel."""
     common = _setup(db, api_base_url, verbose)
     if channel and not ts and not url:
-        return _fetch_channel_messages(common, channel, full_threads, last)
+        return await _fetch_channel_messages(common, channel, full_threads, last)
 
     from slack_cached.cache import fetch_thread
 
     ref = _resolve_ref(url, channel, ts)
-    client = _client._build_client(common)
-    with _client._open_db(common) as conn:
-        result = fetch_thread(conn, client, ref)
+    async with _client._open_client(common) as client:
+        with _client._open_db(common) as conn:
+            result = await fetch_thread(conn, client, ref)
     print(
         f"cached {result.total_messages} messages "
         f"({result.fetched_messages} new/updated, "
@@ -66,16 +66,18 @@ def fetch(
     return 0
 
 
-def _fetch_channel_messages(common: CommonArgs, channel: str, full_threads: bool, last: str) -> int:
+async def _fetch_channel_messages(
+    common: CommonArgs, channel: str, full_threads: bool, last: str
+) -> int:
     """Fetch messages from a channel."""
     from slack_cached.cache import fetch_channel_messages
 
     oldest = _oldest_ts_from_last(last)
-    client = _client._build_client(common)
-    with _client._open_db(common) as conn:
-        result = fetch_channel_messages(
-            conn, client, channel, full_threads=full_threads, oldest=oldest
-        )
+    async with _client._open_client(common) as client:
+        with _client._open_db(common) as conn:
+            result = await fetch_channel_messages(
+                conn, client, channel, full_threads=full_threads, oldest=oldest
+            )
     detail = (
         f", {result.threads_with_replies_fetched} threads with replies fetched"
         if full_threads

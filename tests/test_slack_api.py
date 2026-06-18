@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import httpx
 import pytest
 import structlog
 
 from slack_cached.config import Credentials
-from slack_cached.slack_api import DEFAULT_API_BASE, SlackClient
+from slack_cached.slack_api import SlackClient
 
 
 @pytest.fixture(autouse=True)
@@ -26,45 +28,37 @@ def _silence_logging() -> None:
     )
 
 
-class FakeResponse:
-    """Minimal stand-in for a requests.Response."""
+class FakeTransport:
+    """Returns queued JSON payloads via httpx MockTransport interface."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._payload = payload
-        self.status_code = 200
-        self.headers: dict[str, str] = {}
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict[str, Any]:
-        return self._payload
-
-
-class FakeSession:
-    """Returns queued responses and records the params of each call."""
-
-    def __init__(self, responses: list[dict[str, Any]]) -> None:
-        self._responses = responses
+    def __init__(self, payloads: list[dict[str, Any]]) -> None:
+        self._payloads = payloads
         self.calls: list[dict[str, Any]] = []
 
-    def get(
-        self,
-        url: str,
-        headers: dict[str, str],
-        params: dict[str, Any],
-        timeout: int,
-    ) -> FakeResponse:
-        self.calls.append({"url": url, "params": dict(params)})
-        return FakeResponse(self._responses.pop(0))
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        self.calls.append({"url": request.url.path, "params": params})
+        payload = self._payloads.pop(0)
+        return httpx.Response(200, json=payload)
 
 
-def _client(session: FakeSession) -> SlackClient:
-    return SlackClient(Credentials(token="xoxb-test", cookie=None), session=session)
+def _client(transport: FakeTransport) -> SlackClient:
+    httpx_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    return SlackClient(
+        Credentials(token="xoxb-test", cookie=None),
+        client=httpx_client,
+    )
+
+
+async def _collect(agen) -> list:
+    out = []
+    async for item in agen:
+        out.append(item)
+    return out
 
 
 def test_iter_users_follows_cursor() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {
                 "ok": True,
@@ -74,34 +68,34 @@ def test_iter_users_follows_cursor() -> None:
             {"ok": True, "members": [{"id": "U3"}], "response_metadata": {"next_cursor": ""}},
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    users = list(client.iter_users())
+    users = asyncio.run(_collect(client.iter_users()))
 
     assert [u["id"] for u in users] == ["U1", "U2", "U3"]
-    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/users.list"
-    assert "cursor" not in session.calls[0]["params"]
-    assert session.calls[1]["params"]["cursor"] == "next"
+    assert transport.calls[0]["url"] == "/api/users.list"
+    assert "cursor" not in transport.calls[0]["params"]
+    assert transport.calls[1]["params"]["cursor"] == "next"
 
 
 def test_iter_channels_passes_types_and_stops_without_cursor() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {"ok": True, "channels": [{"id": "C1"}], "response_metadata": {}},
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    channels = list(client.iter_channels(types="public_channel"))
+    channels = asyncio.run(_collect(client.iter_channels(types="public_channel")))
 
     assert [c["id"] for c in channels] == ["C1"]
-    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/conversations.list"
-    assert session.calls[0]["params"]["types"] == "public_channel"
-    assert len(session.calls) == 1
+    assert transport.calls[0]["url"] == "/api/conversations.list"
+    assert transport.calls[0]["params"]["types"] == "public_channel"
+    assert len(transport.calls) == 1
 
 
 def test_iter_channel_history_follows_cursor() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {
                 "ok": True,
@@ -112,33 +106,33 @@ def test_iter_channel_history_follows_cursor() -> None:
             {"ok": True, "messages": [{"ts": "3.0"}], "response_metadata": {}},
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    msgs = list(client.iter_channel_history(channel="C1"))
+    msgs = asyncio.run(_collect(client.iter_channel_history(channel="C1")))
 
     assert [m["ts"] for m in msgs] == ["1.0", "2.0", "3.0"]
-    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/conversations.history"
-    assert session.calls[0]["params"]["channel"] == "C1"
-    assert "cursor" not in session.calls[0]["params"]
-    assert session.calls[1]["params"]["cursor"] == "page2"
+    assert transport.calls[0]["url"] == "/api/conversations.history"
+    assert transport.calls[0]["params"]["channel"] == "C1"
+    assert "cursor" not in transport.calls[0]["params"]
+    assert transport.calls[1]["params"]["cursor"] == "page2"
 
 
 def test_iter_channel_history_stops_without_has_more() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {"ok": True, "messages": [{"ts": "1.0"}]},
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    msgs = list(client.iter_channel_history(channel="C1"))
+    msgs = asyncio.run(_collect(client.iter_channel_history(channel="C1")))
 
     assert len(msgs) == 1
-    assert len(session.calls) == 1
+    assert len(transport.calls) == 1
 
 
 def test_iter_search_messages_paginates_by_page() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {
                 "ok": True,
@@ -177,21 +171,21 @@ def test_iter_search_messages_paginates_by_page() -> None:
             },
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    msgs = list(client.iter_search_messages(query="hello", count=2))
+    msgs = asyncio.run(_collect(client.iter_search_messages(query="hello", count=2)))
 
     assert [m["ts"] for m in msgs] == ["1.0", "2.0", "3.0"]
-    assert len(session.calls) == 2
-    assert session.calls[0]["url"] == f"{DEFAULT_API_BASE}/search.messages"
-    assert session.calls[0]["params"]["query"] == "hello"
-    assert session.calls[0]["params"]["page"] == 1
-    assert session.calls[0]["params"]["count"] == 2
-    assert session.calls[1]["params"]["page"] == 2
+    assert len(transport.calls) == 2
+    assert transport.calls[0]["url"] == "/api/search.messages"
+    assert transport.calls[0]["params"]["query"] == "hello"
+    assert transport.calls[0]["params"]["page"] == "1"
+    assert transport.calls[0]["params"]["count"] == "2"
+    assert transport.calls[1]["params"]["page"] == "2"
 
 
 def test_iter_search_messages_stops_on_single_page() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {
                 "ok": True,
@@ -210,16 +204,16 @@ def test_iter_search_messages_stops_on_single_page() -> None:
             },
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    msgs = list(client.iter_search_messages(query="hello"))
+    msgs = asyncio.run(_collect(client.iter_search_messages(query="hello")))
 
     assert [m["ts"] for m in msgs] == ["1.0"]
-    assert len(session.calls) == 1
+    assert len(transport.calls) == 1
 
 
 def test_iter_search_messages_no_matches_returns_empty() -> None:
-    session = FakeSession(
+    transport = FakeTransport(
         [
             {
                 "ok": True,
@@ -238,7 +232,9 @@ def test_iter_search_messages_no_matches_returns_empty() -> None:
             },
         ]
     )
-    client = _client(session)
+    client = _client(transport)
 
-    assert list(client.iter_search_messages(query="nothing")) == []
-    assert len(session.calls) == 1
+    msgs = asyncio.run(_collect(client.iter_search_messages(query="nothing")))
+
+    assert msgs == []
+    assert len(transport.calls) == 1

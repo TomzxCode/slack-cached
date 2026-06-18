@@ -42,7 +42,7 @@ log = structlog.get_logger(__name__)
 
 
 @app.command
-def show(
+async def show(
     url: UrlArg = None,
     *,
     channel: ChannelArg = None,
@@ -72,7 +72,7 @@ def show(
     fmt = _output_format(json_output, jsonl_output)
 
     if channel and not ts and not url:
-        return _show_channel(common, channel, no_fetch, last, fmt)
+        return await _show_channel(common, channel, no_fetch, last, fmt)
 
     log.debug("cmd_show_start")
     with _timed("resolve_ref"):
@@ -92,11 +92,11 @@ def show(
                     file=sys.stderr,
                 )
             # Imported lazily so the cached-read path does not pull in the
-            # requests-based Slack client (see _build_client).
+            # httpx-based Slack client (see _build_client).
             from slack_cached.cache import fetch_thread
 
-            client = _client._build_client(common)
-            fetch_thread(conn, client, ref)
+            async with _client._open_client(common) as client:
+                await fetch_thread(conn, client, ref)
         with _timed("load_thread"):
             messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
         log.debug("loaded_messages", count=len(messages))
@@ -123,7 +123,9 @@ def show(
     return 0
 
 
-def _show_channel(common: CommonArgs, channel: str, no_fetch: bool, last: str, fmt: str) -> int:
+async def _show_channel(
+    common: CommonArgs, channel: str, no_fetch: bool, last: str, fmt: str
+) -> int:
     """Show all messages for a channel, fetching first if needed."""
     oldest = _oldest_ts_from_last(last)
     with _client._open_db(common) as conn:
@@ -137,8 +139,8 @@ def _show_channel(common: CommonArgs, channel: str, no_fetch: bool, last: str, f
                 )
             from slack_cached.cache import fetch_channel_messages
 
-            client = _client._build_client(common)
-            fetch_channel_messages(conn, client, channel, oldest=oldest)
+            async with _client._open_client(common) as client:
+                await fetch_channel_messages(conn, client, channel, oldest=oldest)
             messages = load_channel_messages(conn, channel)
         with _timed("build_user_names"):
             user_names = _build_user_names(conn, messages)

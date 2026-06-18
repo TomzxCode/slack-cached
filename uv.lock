@@ -798,7 +798,6 @@ dependencies = [
     { name = "cyclopts" },
     { name = "httpx" },
     { name = "python-dotenv" },
-    { name = "requests" },
     { name = "structlog" },
 ]
 
@@ -815,7 +814,6 @@ requires-dist = [
     { name = "cyclopts", specifier = ">=4.18.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "requests", specifier = ">=2.32" },
     { name = "structlog", specifier = ">=24.4" },
 ]
 
