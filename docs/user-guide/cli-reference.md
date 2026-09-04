@@ -4,7 +4,7 @@
 
 | Option | Description |
 |---|---|
-| `--db PATH` | SQLite cache database path (default: `~/.cache/slack-cached/threads.db`) |
+| `--db PATH` | SQLite cache database path (default: `~/.cache/slackx/threads.db`) |
 | `--api-base-url URL` | Slack API base URL (default: `https://slack.com/api`) |
 | `-v`, `--verbose` | Enable debug logging |
 
@@ -15,7 +15,7 @@
 Cache or refresh a Slack thread, or fetch messages from a channel.
 
 ```bash
-slack-cached fetch [URL] [--channel CHANNEL] [--ts TS] [--full-threads] [--last DURATION]
+slackx fetch [URL] [--channel CHANNEL] [--ts TS] [--full-threads] [--last DURATION]
 ```
 
 | Argument | Description |
@@ -31,7 +31,7 @@ slack-cached fetch [URL] [--channel CHANNEL] [--ts TS] [--full-threads] [--last 
 Print a cached thread or channel to stdout.
 
 ```bash
-slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json | --jsonl] [--no-fetch] [--last DURATION]
+slackx show [URL] [--channel CHANNEL] [--ts TS] [--json | --jsonl] [--no-fetch] [--last DURATION]
 ```
 
 | Argument | Description |
@@ -49,7 +49,7 @@ slack-cached show [URL] [--channel CHANNEL] [--ts TS] [--json | --jsonl] [--no-f
 Search Slack via `search.messages` and cache every matched message/thread.
 
 ```bash
-slack-cached search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|desc] [--full-threads] [--json | --jsonl]
+slackx search QUERY [--count N] [--sort score|timestamp] [--sort-dir asc|desc] [--full-threads] [--json | --jsonl]
 ```
 
 | Argument | Description |
@@ -70,7 +70,7 @@ Search is always a live API call. Every matched message is cached under its
 Cache all workspace users.
 
 ```bash
-slack-cached fetch-users
+slackx fetch-users
 ```
 
 ### fetch-channels
@@ -78,7 +78,7 @@ slack-cached fetch-users
 Cache all visible channels.
 
 ```bash
-slack-cached fetch-channels
+slackx fetch-channels
 ```
 
 ### show-users
@@ -86,7 +86,7 @@ slack-cached fetch-channels
 Print cached users.
 
 ```bash
-slack-cached show-users [--json | --jsonl] [--no-fetch]
+slackx show-users [--json | --jsonl] [--no-fetch]
 ```
 
 ### show-channels
@@ -94,7 +94,7 @@ slack-cached show-users [--json | --jsonl] [--no-fetch]
 Print cached channels.
 
 ```bash
-slack-cached show-channels [--json | --jsonl] [--no-fetch]
+slackx show-channels [--json | --jsonl] [--no-fetch]
 ```
 
 ### poll
@@ -102,7 +102,7 @@ slack-cached show-channels [--json | --jsonl] [--no-fetch]
 Poll channels concurrently in a loop for new messages.
 
 ```bash
-slack-cached poll --channels CHANNELS [--interval DURATION] [--last DURATION] [--full-threads] [--concurrency N] [--json]
+slackx poll --channels CHANNELS [--interval DURATION] [--last DURATION] [--full-threads] [--concurrency N] [--json]
 ```
 
 | Argument | Description |
@@ -127,7 +127,7 @@ Stops gracefully on `Ctrl+C`.
 Serve the cached database through a local web UI.
 
 ```bash
-slack-cached serve [--host HOST] [--port PORT]
+slackx serve [--host HOST] [--port PORT]
 ```
 
 | Argument | Description |

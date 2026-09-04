@@ -17,7 +17,7 @@ from slack_cached.config import default_db_path
 log = structlog.get_logger(__name__)
 
 app = App(
-    name="slack-cached",
+    name="slackx",
     help="Cache Slack threads to a local SQLite database.",
     version="0.1.0",
 )

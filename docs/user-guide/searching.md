@@ -7,7 +7,7 @@ matched message is cached under its `(channel, thread_ts)` so it can be revisite
 later with `show`:
 
 ```bash
-slack-cached search "deploy failed"
+slackx search "deploy failed"
 ```
 
 Search is always a live API call against `search.messages`. It both prints the
@@ -18,13 +18,13 @@ matches and writes them to the cache.
 Human-readable by default:
 
 ```bash
-slack-cached search "incident"
+slackx search "incident"
 ```
 
 JSON with `--json`:
 
 ```bash
-slack-cached search "incident" --json
+slackx search "incident" --json
 ```
 
 Each match includes its `channel`, `channel_name` (when cached), `ts`, `thread_ts`,
@@ -35,7 +35,7 @@ Each match includes its `channel`, `channel_name` (when cached), `ts`, `thread_t
 Add `--full-threads` to fetch all replies for every thread a match belongs to:
 
 ```bash
-slack-cached search "RFC" --full-threads
+slackx search "RFC" --full-threads
 ```
 
 The summary reports the breakdown of threads and messages into ones already
@@ -72,7 +72,7 @@ Control result paging and ordering:
 
 ```bash
 # Up to 5 results per page, ranked by relevance, oldest first
-slack-cached search "RFC" --count 5 --sort score --sort-dir asc
+slackx search "RFC" --count 5 --sort score --sort-dir asc
 ```
 
 | Flag | Values | Default |
@@ -86,8 +86,8 @@ slack-cached search "RFC" --count 5 --sort score --sort-dir asc
 Because each match is cached, you can re-open it later without searching again:
 
 ```bash
-slack-cached search "outage" --json   # note the channel and thread_ts
-slack-cached show --channel C01234 --ts 1700000000.123456
+slackx search "outage" --json   # note the channel and thread_ts
+slackx show --channel C01234 --ts 1700000000.123456
 ```
 
 When `--full-threads` was used, the entire thread (not just the matching

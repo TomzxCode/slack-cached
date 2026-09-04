@@ -1,4 +1,4 @@
-# slack-cached
+# slackx
 
 A small Python CLI that caches Slack threads, channel messages, users, and
 channels to a local SQLite database.
@@ -21,7 +21,7 @@ uv sync
 Run it:
 
 ```bash
-uv run slack-cached --help
+uv run slackx --help
 ```
 
 ## Authentication
@@ -30,8 +30,8 @@ Credentials are loaded in this order:
 
 1. Environment variables: `SLACK_TOKEN` (and optional `SLACK_COOKIE` for
    xoxc/web-client tokens).
-2. A config file at `$XDG_CONFIG_HOME/slack-cached/config`
-   (defaults to `~/.config/slack-cached/config`).
+2. A config file at `$XDG_CONFIG_HOME/slackx/config`
+   (defaults to `~/.config/slackx/config`).
    It uses a simple `KEY=VALUE` format:
    ```
    SLACK_TOKEN=xoxb-...
@@ -42,7 +42,7 @@ Credentials are loaded in this order:
 ## Cache location
 
 The default cache database lives at
-`$XDG_CACHE_HOME/slack-cached/threads.db` (or `~/.cache/slack-cached/threads.db`).
+`$XDG_CACHE_HOME/slackx/threads.db` (or `~/.cache/slackx/threads.db`).
 Override with `--db /path/to/file.db`.
 
 ## Usage
@@ -57,13 +57,13 @@ base URL (defaults to `https://slack.com/api`; also settable via
 Cache or refresh a thread (no thread output, only a summary on stderr):
 
 ```bash
-slack-cached fetch https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
+slackx fetch https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
 ```
 
 Or with explicit channel/ts:
 
 ```bash
-slack-cached fetch --channel C0123ABCDEF --ts 1700000000.123456
+slackx fetch --channel C0123ABCDEF --ts 1700000000.123456
 ```
 
 Show a cached thread (human-readable by default; use `--json` for JSON, or
@@ -71,9 +71,9 @@ Show a cached thread (human-readable by default; use `--json` for JSON, or
 if the thread is missing; pass `--no-fetch` to disable that:
 
 ```bash
-slack-cached show https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
-slack-cached show --json https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
-slack-cached show --jsonl --channel C0123ABCDEF --ts 1700000000.123456 >> threads.jsonl
+slackx show https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
+slackx show --json https://acme.slack.com/archives/C0123ABCDEF/p1700000000123456
+slackx show --jsonl --channel C0123ABCDEF --ts 1700000000.123456 >> threads.jsonl
 ```
 
 ### Channel messages
@@ -81,14 +81,14 @@ slack-cached show --jsonl --channel C0123ABCDEF --ts 1700000000.123456 >> thread
 Fetch all top-level messages in a channel via `conversations.history`:
 
 ```bash
-slack-cached fetch --channel C0123ABCDEF
+slackx fetch --channel C0123ABCDEF
 ```
 
 Add `--full-threads` to also fetch every reply thread for messages that have
 replies:
 
 ```bash
-slack-cached fetch --channel C0123ABCDEF --full-threads
+slackx fetch --channel C0123ABCDEF --full-threads
 ```
 
 ### Search
@@ -98,22 +98,22 @@ matched message is cached under its `(channel, thread_ts)` so it can be revisite
 later with `show`. Search is always a live API call:
 
 ```bash
-slack-cached search "deploy failed"
-slack-cached search "from:@alice after:2024-01-01" --json
-slack-cached search "incident" --jsonl   # one JSON line per run, easy to append
+slackx search "deploy failed"
+slackx search "from:@alice after:2024-01-01" --json
+slackx search "incident" --jsonl   # one JSON line per run, easy to append
 ```
 
 Add `--full-threads` to also fetch every reply for each thread a match belongs to:
 
 ```bash
-slack-cached search "incident" --full-threads
+slackx search "incident" --full-threads
 ```
 
 Tune result paging and ordering with `--count`, `--sort` (`score` or `timestamp`,
 default `timestamp`), and `--sort-dir` (`asc` or `desc`, default `desc`).
 
 ```bash
-slack-cached search "RFC" --count 5 --sort score --sort-dir asc
+slackx search "RFC" --count 5 --sort score --sort-dir asc
 ```
 
 ### Polling channels
@@ -121,7 +121,7 @@ slack-cached search "RFC" --count 5 --sort score --sort-dir asc
 Poll multiple channels concurrently for new messages:
 
 ```bash
-slack-cached poll --channels C001,#general,random --interval 5m --last 5m --concurrency 3
+slackx poll --channels C001,#general,random --interval 5m --last 5m --concurrency 3
 ```
 
 Uses `httpx.AsyncClient` with an `asyncio.Semaphore` for concurrent, non-blocking
@@ -134,7 +134,7 @@ per-cycle JSON summaries on stdout. Stops gracefully with `Ctrl+C`.
 Browse the cache in a browser with a Slack-like interface:
 
 ```bash
-slack-cached serve          # then open http://127.0.0.1:8280
+slackx serve          # then open http://127.0.0.1:8280
 ```
 
 Lists users and channels, renders channel messages and threads with readable
@@ -148,8 +148,8 @@ configured; browsing the cache itself needs none.
 Cache or refresh every workspace user or visible channel:
 
 ```bash
-slack-cached fetch-users
-slack-cached fetch-channels
+slackx fetch-users
+slackx fetch-channels
 ```
 
 Show cached users or channels (human-readable by default, `--json` for pretty
@@ -157,9 +157,9 @@ JSON, `--jsonl` for a single compact JSON line; both auto-fetch when empty
 unless `--no-fetch` is given):
 
 ```bash
-slack-cached show-users
-slack-cached show-channels --json
-slack-cached show-channels --jsonl
+slackx show-users
+slackx show-channels --json
+slackx show-channels --jsonl
 ```
 
 When a thread's authors are present in the cached users, `show` renders their
@@ -189,10 +189,10 @@ It serves deterministic workspace data (`conversations.list`,
 `conversations.replies`, `conversations.history`, `users.list`) and can
 simulate Slack-tier rate limiting with `--rate-limits`.
 
-Point `slack-cached` at it with:
+Point `slackx` at it with:
 
 ```bash
-slack-cached --api-base-url http://localhost:8199/api fetch ...
+slackx --api-base-url http://localhost:8199/api fetch ...
 ```
 
 ## Development

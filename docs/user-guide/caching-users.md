@@ -5,7 +5,7 @@
 Download all workspace members to the local cache:
 
 ```bash
-slack-cached fetch-users
+slackx fetch-users
 ```
 
 The command prints a summary to stderr:
@@ -21,13 +21,13 @@ Running it again updates existing records without duplication (upsert by user ID
 Display all cached users in human-readable format:
 
 ```bash
-slack-cached show-users
+slackx show-users
 ```
 
 Display as JSON:
 
 ```bash
-slack-cached show-users --json
+slackx show-users --json
 ```
 
 Users are auto-fetched if the cache is empty (unless `--no-fetch` is given).

@@ -1,4 +1,4 @@
-"""``slack-cached fetch-channels`` command."""
+"""``slackx fetch-channels`` command."""
 
 import sys
 

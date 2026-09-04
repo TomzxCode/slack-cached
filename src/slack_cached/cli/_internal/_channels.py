@@ -85,7 +85,7 @@ async def _resolve_channels(common: CommonArgs, entries: Iterable[str]) -> list[
         joined = ", ".join(unresolved)
         print(
             f"error: could not resolve channel name(s): {joined} "
-            "(run 'slack-cached fetch-channels' or check the spelling)",
+            "(run 'slackx fetch-channels' or check the spelling)",
             file=sys.stderr,
         )
         return None

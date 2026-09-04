@@ -1,4 +1,4 @@
-"""Command-line interface for slack-cached.
+"""Command-line interface for slackx.
 
 Subcommands:
 - fetch: cache or refresh a Slack thread silently.
@@ -27,7 +27,7 @@ __all__ = ["app", "main"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point used by tests and the ``slack-cached`` console script."""
+    """Entry point used by tests and the ``slackx`` console script."""
     return app(argv, result_action="return_int_as_exit_code_else_zero")
 
 

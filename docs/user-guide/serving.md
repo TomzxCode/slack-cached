@@ -5,7 +5,7 @@
 Browse the local cache in a browser:
 
 ```bash
-slack-cached serve
+slackx serve
 ```
 
 Then open <http://127.0.0.1:8280>.

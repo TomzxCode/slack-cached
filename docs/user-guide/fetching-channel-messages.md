@@ -5,7 +5,7 @@
 Fetch all top-level messages from a channel:
 
 ```bash
-slack-cached fetch --channel C01234
+slackx fetch --channel C01234
 ```
 
 This uses the Slack `conversations.history` API to retrieve top-level messages (standalone messages and thread parents). Thread replies are not included unless you use `--full-threads`.
@@ -15,7 +15,7 @@ This uses the Slack `conversations.history` API to retrieve top-level messages (
 Add `--full-threads` to also fetch all replies for every threaded conversation found in the channel:
 
 ```bash
-slack-cached fetch --channel C01234 --full-threads
+slackx fetch --channel C01234 --full-threads
 ```
 
 The summary includes thread expansion stats:
@@ -30,13 +30,13 @@ Use `--last` to limit the lookback period. Accepts duration strings like `24h`, 
 
 ```bash
 # Last 3 days
-slack-cached fetch --channel C01234 --last 3d
+slackx fetch --channel C01234 --last 3d
 
 # Last 2 hours
-slack-cached fetch --channel C01234 --last 2h
+slackx fetch --channel C01234 --last 2h
 
 # Full history
-slack-cached fetch --channel C01234 --last all
+slackx fetch --channel C01234 --last all
 ```
 
 The default lookback is `1d` (one day).
@@ -46,19 +46,19 @@ The default lookback is `1d` (one day).
 Display all cached messages for a channel:
 
 ```bash
-slack-cached show --channel C01234
+slackx show --channel C01234
 ```
 
 Filter by time with `--last`:
 
 ```bash
-slack-cached show --channel C01234 --last 7d
+slackx show --channel C01234 --last 7d
 ```
 
 Display as JSON:
 
 ```bash
-slack-cached show --channel C01234 --json
+slackx show --channel C01234 --json
 ```
 
 Channel messages are auto-fetched if the cache is empty (unless `--no-fetch` is given).

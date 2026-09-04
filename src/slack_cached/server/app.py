@@ -1,4 +1,4 @@
-"""FastAPI application serving the slack-cached web UI and its JSON API.
+"""FastAPI application serving the slackx web UI and its JSON API.
 
 The server is a read-mostly view over the local SQLite cache. A handful of
 POST endpoints trigger live Slack fetches (reusing the same client and
@@ -35,7 +35,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 NO_CREDENTIALS_DETAIL = (
     "No Slack credentials configured, so this refresh cannot run. "
     "Set SLACK_TOKEN (and SLACK_COOKIE for xoxc- tokens), or add them to the "
-    "slack-cached config file, then restart the server."
+    "slackx config file, then restart the server."
 )
 
 
@@ -116,7 +116,7 @@ def create_app(
         yield
 
     fastapp = FastAPI(
-        title="slack-cached",
+        title="slackx",
         version="0.1.0",
         lifespan=lifespan,
         docs_url=None,

@@ -1,4 +1,4 @@
-/* slack-cached web UI.
+/* slackx web UI.
  *
  * A single-file Vue 3 application (no build step, Vue loaded from CDN):
  * sidebar with channels and people, a Slack-like message list, a thread

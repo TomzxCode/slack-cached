@@ -1,4 +1,4 @@
-site_name: Slack Cached Documentation
+site_name: slackx
 site_description: Documentation for Slack Cached, a tool to cache Slack threads to a local SQLite database
 site_url: https://tomzxcode.github.io/slack-cached
 repo_name: TomzxCode/slack-cached

@@ -1,4 +1,4 @@
-"""``slack-cached show-users`` command."""
+"""``slackx show-users`` command."""
 
 import json
 import sys

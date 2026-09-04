@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-slack-cached = "slack_cached.cli:main"
+slackx = "slack_cached.cli:main"
 slack-fake-server = "slack_cached.fake_slack:main"
 
 [dependency-groups]

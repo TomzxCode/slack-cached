@@ -19,7 +19,7 @@ export SLACK_COOKIE=xoxd-your-d-cookie
 
 ### Config file
 
-Create `~/.config/slack-cached/config` (or `$XDG_CONFIG_HOME/slack-cached/config`):
+Create `~/.config/slackx/config` (or `$XDG_CONFIG_HOME/slackx/config`):
 
 ```
 SLACK_TOKEN=xoxb-your-bot-token
@@ -41,13 +41,13 @@ Override the Slack API base URL to point at a fake server or custom endpoint:
 
 ```bash
 # Via CLI flag
-slack-cached --api-base-url http://localhost:8199/api fetch <url>
+slackx --api-base-url http://localhost:8199/api fetch <url>
 
 # Via environment variable
 export SLACK_API_BASE_URL=http://localhost:8199/api
 
 # Via config file
-echo "SLACK_API_BASE_URL=http://localhost:8199/api" >> ~/.config/slack-cached/config
+echo "SLACK_API_BASE_URL=http://localhost:8199/api" >> ~/.config/slackx/config
 ```
 
 When `--api-base-url` points to a non-default server, credentials are optional.
@@ -58,13 +58,13 @@ The default cache location follows XDG conventions:
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.cache/slack-cached/threads.db` |
-| Linux (XDG) | `$XDG_CACHE_HOME/slack-cached/threads.db` |
+| Linux | `~/.cache/slackx/threads.db` |
+| Linux (XDG) | `$XDG_CACHE_HOME/slackx/threads.db` |
 
 Override with `--db`:
 
 ```bash
-slack-cached --db /path/to/custom.db fetch <url>
+slackx --db /path/to/custom.db fetch <url>
 ```
 
 ## Verbose mode
@@ -72,7 +72,7 @@ slack-cached --db /path/to/custom.db fetch <url>
 Enable debug logging with `-v` or `--verbose`:
 
 ```bash
-slack-cached -v fetch <url>
+slackx -v fetch <url>
 ```
 
 This outputs SQL query timings, API request details, and other diagnostic information to stderr.

@@ -31,7 +31,7 @@ def test_load_credentials_from_config_file(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.delenv("SLACK_COOKIE", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    cfg_dir = tmp_path / "slack-cached"
+    cfg_dir = tmp_path / "slackx"
     cfg_dir.mkdir()
     (cfg_dir / "config").write_text("SLACK_TOKEN=xoxc-file\nSLACK_COOKIE=cookie-file\n")
 
@@ -47,7 +47,7 @@ def test_load_credentials_env_overrides_file(
     monkeypatch.delenv("SLACK_COOKIE", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-    cfg_dir = tmp_path / "slack-cached"
+    cfg_dir = tmp_path / "slackx"
     cfg_dir.mkdir()
     (cfg_dir / "config").write_text("SLACK_TOKEN=xoxc-file\nSLACK_COOKIE=cookie-file\n")
 
@@ -66,4 +66,4 @@ def test_load_credentials_missing_raises(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 def test_default_db_path_uses_xdg_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    assert config.default_db_path() == tmp_path / "slack-cached" / "threads.db"
+    assert config.default_db_path() == tmp_path / "slackx" / "threads.db"

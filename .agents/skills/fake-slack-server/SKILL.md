@@ -1,14 +1,14 @@
 ---
 name: fake-slack-server
 description: >-
-  Start the fake Slack API server from slack-cached to provide deterministic,
+  Start the fake Slack API server from slackx to provide deterministic,
   realistic workspace data for testing and development. Use when tests or
   commands need a local Slack-compatible API without real credentials.
 ---
 
 # Fake Slack Server
 
-Start the fake Slack API server bundled in the `slack-cached` project.
+Start the fake Slack API server bundled in the `slackx` project.
 It serves deterministic, realistic workspace data (users, channels, threads)
 under the same endpoint paths as the real Slack Web API, so any tool that
 talks to `slack.com/api` can be pointed at it.
@@ -18,7 +18,7 @@ talks to `slack.com/api` can be pointed at it.
 ## When to use
 
 - Running integration tests that need Slack API responses.
-- Developing or debugging `slack-cached` CLI commands without real credentials.
+- Developing or debugging `slackx` CLI commands without real credentials.
 - Prototyping skills or scripts that consume Slack data.
 - Any situation where you need stable, repeatable Slack-like data locally.
 
@@ -28,7 +28,7 @@ talks to `slack.com/api` can be pointed at it.
 
 ### Start the server
 
-From the project root (`/home/tomzx/src/slack-cached`):
+From the project root (`/home/tomzx/src/slackx`):
 
 ```bash
 uv run slack-fake-server --port 8199 --seed 42
@@ -96,17 +96,17 @@ curl -s "http://localhost:8199/api/conversations.history?channel=C0001" | python
 
 ---
 
-## Using with slack-cached CLI
+## Using with slackx CLI
 
 Point the CLI at the fake server with `--api-base-url`:
 
 ```bash
-uv run slack-cached fetch-users --api-base-url http://localhost:8199/api
-uv run slack-cached fetch-channels --api-base-url http://localhost:8199/api
-uv run slack-cached show-users --api-base-url http://localhost:8199/api
-uv run slack-cached show-channels --api-base-url http://localhost:8199/api
-SLACK_TOKEN=xoxb-fake uv run slack-cached fetch-channel-messages --channel C0001 --api-base-url http://localhost:8199/api
-SLACK_TOKEN=xoxb-fake uv run slack-cached fetch-channel-messages --channel C0001 --full-threads --api-base-url http://localhost:8199/api
+uv run slackx fetch-users --api-base-url http://localhost:8199/api
+uv run slackx fetch-channels --api-base-url http://localhost:8199/api
+uv run slackx show-users --api-base-url http://localhost:8199/api
+uv run slackx show-channels --api-base-url http://localhost:8199/api
+SLACK_TOKEN=xoxb-fake uv run slackx fetch-channel-messages --channel C0001 --api-base-url http://localhost:8199/api
+SLACK_TOKEN=xoxb-fake uv run slackx fetch-channel-messages --channel C0001 --full-threads --api-base-url http://localhost:8199/api
 ```
 
 No real Slack token is needed; the fake server accepts any Authorization header.

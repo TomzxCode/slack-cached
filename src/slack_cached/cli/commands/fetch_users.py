@@ -1,4 +1,4 @@
-"""``slack-cached fetch-users`` command."""
+"""``slackx fetch-users`` command."""
 
 import sys
 

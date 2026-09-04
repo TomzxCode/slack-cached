@@ -1,4 +1,4 @@
-"""``slack-cached show`` command."""
+"""``slackx show`` command."""
 
 import sys
 from typing import Annotated

@@ -41,13 +41,13 @@ slack-fake-server [OPTIONS]
 
 All endpoints return Slack-compatible JSON with cursor-based pagination.
 
-## Usage with slack-cached
+## Usage with slackx
 
-Point slack-cached at the fake server using `--api-base-url`:
+Point slackx at the fake server using `--api-base-url`:
 
 ```bash
 slack-fake-server &
-slack-cached --api-base-url http://localhost:8199/api fetch --channel C00000001
+slackx --api-base-url http://localhost:8199/api fetch --channel C00000001
 ```
 
 When using a non-default API base URL, credentials are not required.

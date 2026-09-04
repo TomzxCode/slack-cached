@@ -14,7 +14,7 @@ Python 3.13 or later is required.
 
 ## Slack credentials
 
-slack-cached needs a Slack token to access the API. Two authentication methods are supported:
+slackx needs a Slack token to access the API. Two authentication methods are supported:
 
 **Bot token (recommended)**
 
@@ -33,7 +33,7 @@ export SLACK_TOKEN=xoxc-your-browser-token
 export SLACK_COOKIE=xoxd-your-d-cookie
 ```
 
-Alternatively, create a config file at `~/.config/slack-cached/config`:
+Alternatively, create a config file at `~/.config/slackx/config`:
 
 ```
 SLACK_TOKEN=xoxb-your-bot-token
@@ -46,26 +46,26 @@ Environment variables take precedence over the config file.
 Fetch a Slack thread by pasting its permalink URL:
 
 ```bash
-slack-cached fetch "https://workspace.slack.com/archives/C01234/p1700000000123456"
+slackx fetch "https://workspace.slack.com/archives/C01234/p1700000000123456"
 ```
 
 Display the cached thread:
 
 ```bash
-slack-cached show "https://workspace.slack.com/archives/C01234/p1700000000123456"
+slackx show "https://workspace.slack.com/archives/C01234/p1700000000123456"
 ```
 
 Fetch all workspace users and channels:
 
 ```bash
-slack-cached fetch-users
-slack-cached fetch-channels
+slackx fetch-users
+slackx fetch-channels
 ```
 
 ## Cache location
 
-The SQLite database is stored at `~/.cache/slack-cached/threads.db` by default, following the XDG base directory specification. Override with `--db`:
+The SQLite database is stored at `~/.cache/slackx/threads.db` by default, following the XDG base directory specification. Override with `--db`:
 
 ```bash
-slack-cached --db /path/to/custom.db fetch <url>
+slackx --db /path/to/custom.db fetch <url>
 ```

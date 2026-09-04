@@ -1,4 +1,4 @@
-"""High-level async cache operations for slack-cached.
+"""High-level async cache operations for slackx.
 
 ``fetch_thread`` decides whether to do a full or incremental fetch based on
 existing cache state, calls the Slack API concurrently, and writes the results

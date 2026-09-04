@@ -1,4 +1,4 @@
-"""``slack-cached serve`` command: browse the cache in a browser."""
+"""``slackx serve`` command: browse the cache in a browser."""
 
 from __future__ import annotations
 

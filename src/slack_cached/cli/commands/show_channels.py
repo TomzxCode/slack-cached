@@ -1,4 +1,4 @@
-"""``slack-cached show-channels`` command."""
+"""``slackx show-channels`` command."""
 
 import json
 import sys

@@ -1,12 +1,12 @@
-"""Configuration loading for slack-cached.
+"""Configuration loading for slackx.
 
 Credentials are resolved in this order:
 1. Environment variables (SLACK_TOKEN, SLACK_COOKIE).
-2. A config file at $XDG_CONFIG_HOME/slack-cached/config or ~/.config/slack-cached/config.
+2. A config file at $XDG_CONFIG_HOME/slackx/config or ~/.config/slackx/config.
    The config file is a simple KEY=VALUE format, similar to a .env file.
 
-The cache database lives at $XDG_CACHE_HOME/slack-cached/threads.db
-or ~/.cache/slack-cached/threads.db by default, and can be overridden via --db.
+The cache database lives at $XDG_CACHE_HOME/slackx/threads.db
+or ~/.cache/slackx/threads.db by default, and can be overridden via --db.
 """
 
 import os
@@ -16,7 +16,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 CONFIG_FILENAME = "config"
-APP_NAME = "slack-cached"
+APP_NAME = "slackx"
 DEFAULT_DB_NAME = "threads.db"
 
 
