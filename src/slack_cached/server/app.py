@@ -324,6 +324,14 @@ def create_app(
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    # Slack-style deep links (same shape as the permalinks urls.py parses).
+    # The SPA is served for both; the client reads the path and opens the
+    # channel/thread it points at.
+    @fastapp.get("/archives/{channel_id}", include_in_schema=False)
+    @fastapp.get("/archives/{channel_id}/{message_ref}", include_in_schema=False)
+    async def archive(channel_id: str, message_ref: str | None = None) -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
     fastapp.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return fastapp

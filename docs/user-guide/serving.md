@@ -28,7 +28,29 @@ The interface mimics Slack's layout over the cached database:
   "Load older messages" paging.
 - A thread panel: click the reply count under a message to read the full
   thread alongside the channel.
+- Every message's timestamp is a link to that message. Clicking it jumps to
+  the message (messages inside a thread open the thread panel); the URL can
+  also be copied or opened in a new tab, e.g. to share an exact spot in the
+  cache.
 - A home view with cache counters and recently active channels.
+
+## URL routing
+
+Views are routed through Slack-style URLs, so any channel or thread can be
+bookmarked or shared, and the browser back/forward buttons work:
+
+| URL | View |
+|---|---|
+| `/` | Home |
+| `/archives/C01234` | Channel |
+| `/archives/C01234/p1700000000123456` | Channel, message highlighted |
+| `/archives/C01234/p1700000000123456?thread_ts=1700000000.000001` | Thread open |
+
+These match Slack's permalink format: the path of a real Slack link
+(`https://workspace.slack.com/archives/C01234/p...?thread_ts=...`) can be
+pasted after the serve host, e.g. open
+<http://127.0.0.1:8280/archives/C01234/p1700000000123456> to jump straight
+to that message from the cache.
 
 ## Themes
 

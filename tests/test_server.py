@@ -197,3 +197,18 @@ def test_index_serves_ui(client: TestClient) -> None:
     assert "vue.global.prod.js" in response.text
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/style.css").status_code == 200
+
+
+def test_slack_style_archive_routes_serve_ui(client: TestClient) -> None:
+    """Deep links in Slack permalink shape serve the SPA for the client to resolve."""
+    for path in (
+        "/archives/C1",
+        "/archives/C1/p1700000000000001",
+        "/archives/C1/p1700000100000003?thread_ts=1700000100.000002",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "vue.global.prod.js" in response.text
+    # Anything beyond the documented shapes is not swallowed.
+    assert client.get("/archives").status_code == 404
+    assert client.get("/archives/C1/p1/extra").status_code == 404

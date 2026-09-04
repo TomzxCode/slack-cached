@@ -3,7 +3,10 @@
  * A single-file Vue 3 application (no build step, Vue loaded from CDN):
  * sidebar with channels and people, a Slack-like message list, a thread
  * panel, and a Ctrl+P palette for jumping between channels and messages.
- * The HTML template lives in index.html; this file holds state and logic.
+ * Views are routed through Slack-style /archives/... URLs (mirroring
+ * slack_cached/urls.py) so any channel or thread can be linked and the
+ * browser back/forward buttons work. The HTML template lives in
+ * index.html; this file holds state and logic.
  */
 (function () {
   'use strict';
@@ -190,6 +193,54 @@
     'nord', 'sunset', 'caramellatte', 'abyss', 'silk', 'fantasy',
   ];
 
+  // ------------------------------------------------------------- routing
+
+  // Slack-style URLs, mirroring the permalink grammar in urls.py:
+  //   /                                              -> home
+  //   /archives/<CHANNEL_ID>                         -> channel view
+  //   /archives/<CHANNEL_ID>/p<PTS>                  -> channel, message highlighted
+  //   /archives/<CHANNEL_ID>/p<PTS>?thread_ts=<TS>   -> thread panel open
+  // p<PTS> is a Slack timestamp with the dot removed (p1700000000123456
+  // -> 1700000000.123456). With thread_ts present the path ts is the
+  // highlighted message and the query ts is the thread root, matching how
+  // Slack permalink URLs mark reply links.
+  var CHANNEL_PREFIXES = ['C', 'G', 'D'];
+  var PTS_RE = /^p\d{7,}$/;
+
+  function tsToPts(ts) {
+    var parts = String(ts).split('.');
+    return 'p' + parts[0] + ((parts[1] || '') + '000000').slice(0, 6);
+  }
+
+  function parseRoute(pathname, search) {
+    var parts = pathname.split('/').filter(function (p) { return p; });
+    if (!parts.length) return { channelId: null, messageTs: null, threadTs: null };
+    if (parts[0] !== 'archives' || parts.length > 3) return null;
+    var channel = parts[1] || '';
+    if (!channel || CHANNEL_PREFIXES.indexOf(channel[0]) === -1) return null;
+    var route = { channelId: channel, messageTs: null, threadTs: null };
+    if (parts.length === 3) {
+      if (!PTS_RE.test(parts[2])) return null;
+      var digits = parts[2].slice(1);
+      route.messageTs = digits.slice(0, -6) + '.' + digits.slice(-6);
+    }
+    var threadTs = new URLSearchParams(search || '').get('thread_ts');
+    if (threadTs) route.threadTs = threadTs;
+    return route;
+  }
+
+  function routeUrl(route) {
+    if (!route || !route.channelId) return '/';
+    var path = '/archives/' + encodeURIComponent(route.channelId);
+    if (route.threadTs) {
+      path += '/' + tsToPts(route.threadTs) +
+        '?thread_ts=' + encodeURIComponent(route.threadTs);
+    } else if (route.messageTs) {
+      path += '/' + tsToPts(route.messageTs);
+    }
+    return path;
+  }
+
   // ------------------------------------------------------------- app
 
   var app = Vue.createApp({
@@ -250,6 +301,17 @@
           .sort(function (a, b) { return (b.latest_ts || 0) - (a.latest_ts || 0); })
           .slice(0, 8);
       },
+
+      // Identity of the routed view; changes keep the address bar in sync.
+      urlKey: function () {
+        return this.view === 'channel'
+          ? this.channelId + '|' + (this.thread ? this.thread.thread_ts : '')
+          : 'home';
+      },
+    },
+
+    watch: {
+      urlKey: function () { this.syncUrl(); },
     },
 
     methods: {
@@ -264,6 +326,19 @@
           userNames: this.userNames,
           channelsById: this.channelsById,
           userAvatars: this.userAvatars,
+          channelId: this.channelId,
+        };
+      },
+
+      // Channel messages in the thread panel link to the thread itself.
+      threadCtx: function () {
+        if (!this.thread) return this.msgCtx();
+        return {
+          userNames: this.userNames,
+          channelsById: this.channelsById,
+          userAvatars: this.userAvatars,
+          channelId: this.thread.channel_id,
+          threadTs: this.thread.thread_ts,
         };
       },
 
@@ -306,6 +381,10 @@
 
       boot: function () {
         var self = this;
+        var finish = function () {
+          self.booted = true;
+          self.applyLocation();
+        };
         Promise.all([
           this._api('/api/summary'),
           this._api('/api/users'),
@@ -325,10 +404,10 @@
           self.channelsById = byId;
           self.userNames = names;
           self.userAvatars = avatars;
-          self.booted = true;
+          finish();
         }).catch(function (err) {
           self.toast('Failed to load cache: ' + err.message, 'error');
-          self.booted = true;
+          finish();
         });
       },
 
@@ -418,6 +497,73 @@
 
       openRootThread: function (msg) {
         if (msg.reply_count > 0) this.openThread(msg.ts);
+      },
+
+      // -------------------------------------------------- URL routing
+
+      syncUrl: function () {
+        if (this._skipUrlSync) return;
+        var url = routeUrl({
+          channelId: this.view === 'channel' ? this.channelId : null,
+          threadTs: this.thread ? this.thread.thread_ts : null,
+        });
+        if (window.location.pathname + window.location.search !== url) {
+          window.history.pushState(null, '', url);
+        }
+      },
+
+      pauseUrlSync: function (mutate) {
+        // Suppress pushState while applying a URL programmatically (boot,
+        // back/forward): the address bar already holds the target URL.
+        this._skipUrlSync = true;
+        mutate();
+        var self = this;
+        Vue.nextTick(function () { self._skipUrlSync = false; });
+      },
+
+      applyRoute: function (route) {
+        var self = this;
+        if (route.channelId === this.channelId && this.view === 'channel') {
+          if (route.threadTs) {
+            this.openThread(route.threadTs, route.messageTs);
+          } else {
+            this.closeThread();
+            if (route.messageTs) this.scrollToMessage(route.messageTs);
+          }
+          return;
+        }
+        this.openChannel(route.channelId, {
+          highlight: route.threadTs ? null : route.messageTs,
+        }).then(function () {
+          if (route.threadTs) self.openThread(route.threadTs, route.messageTs);
+        });
+      },
+
+      applyLocation: function () {
+        var self = this;
+        var route = parseRoute(window.location.pathname, window.location.search);
+        var url = routeUrl(route);
+        if (window.location.pathname + window.location.search !== url) {
+          window.history.replaceState(null, '', url);
+        }
+        if (!route || !route.channelId) {
+          this.pauseUrlSync(this.goHome.bind(this));
+          return;
+        }
+        this.pauseUrlSync(function () { self.applyRoute(route); });
+      },
+
+      onPopState: function () { this.applyLocation(); },
+
+      goHome: function () {
+        this.view = 'home';
+        this.channelId = null;
+        this.channel = null;
+        this.messages = [];
+        this.hasMore = false;
+        this.loadingMessages = false;
+        this.closeThread();
+        this.closeProfile();
       },
 
       // -------------------------------------------------- refresh (live)
@@ -591,14 +737,21 @@
       },
 
       jumpToMessage: function (hit) {
-        var self = this;
-        this.openChannel(hit.channel).then(function () {
-          if (hit.ts === hit.thread_ts) {
-            self.scrollToMessage(hit.ts);
-          } else {
-            self.openThread(hit.thread_ts, hit.ts);
-          }
+        this.openMessageLink({
+          channelId: hit.channel,
+          messageTs: hit.ts,
+          threadTs: hit.ts === hit.thread_ts ? null : hit.thread_ts,
         });
+      },
+
+      // Follow a message permalink (timestamp link or palette hit): push the
+      // URL, then let applyRoute open the channel/thread and highlight.
+      openMessageLink: function (target) {
+        var url = routeUrl(target);
+        if (window.location.pathname + window.location.search !== url) {
+          window.history.pushState(null, '', url);
+        }
+        this.applyRoute(target);
       },
 
       scrollToMessage: function (ts, scrollerRef) {
@@ -673,6 +826,7 @@
 
     mounted: function () {
       document.addEventListener('keydown', this.globalKey);
+      window.addEventListener('popstate', this.onPopState);
       // Follow OS light/dark changes while "System" is selected.
       if (window.matchMedia) {
         var mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -696,6 +850,7 @@
 
     beforeUnmount: function () {
       document.removeEventListener('keydown', this.globalKey);
+      window.removeEventListener('popstate', this.onPopState);
       if (window.matchMedia) {
         var mq = window.matchMedia('(prefers-color-scheme: dark)');
         if (mq.removeEventListener) {
@@ -738,7 +893,8 @@
   });
 
   // One message (avatar, author, time, mrkdwn text, optional thread bar).
-  // ``ctx`` carries the user/channel maps needed for mention resolution.
+  // ``ctx`` carries the user/channel maps needed for mention resolution plus
+  // channelId/threadTs for building the message's permalink URL.
   app.component('message-row', {
     props: {
       msg: { type: Object, required: true },
@@ -746,13 +902,27 @@
       highlight: { type: Boolean, default: false },
       showThreadBar: { type: Boolean, default: false },
     },
-    emits: ['open-thread'],
+    emits: ['open-thread', 'navigate'],
     computed: {
       html: function () { return renderMessageHtml(this.msg, this.ctx); },
       author: function () { return this.msg.user_name || this.msg.user || 'unknown'; },
       time: function () { return fmtTime(tsToDate(this.msg.ts)); },
       avatar: function () {
         return (this.ctx.userAvatars && this.ctx.userAvatars[this.msg.user]) || '';
+      },
+      // Route target for this message. Inside an open thread every message
+      // links to the thread permalink (root included), so opening the URL on
+      // page load restores the thread panel; elsewhere a message links to
+      // itself only.
+      linkTarget: function () {
+        return {
+          channelId: this.ctx.channelId || '',
+          messageTs: this.msg.ts,
+          threadTs: this.ctx.threadTs || null,
+        };
+      },
+      permalink: function () {
+        return this.linkTarget.channelId ? routeUrl(this.linkTarget) : '';
       },
     },
     methods: {
@@ -765,7 +935,9 @@
       '    <div class="flex items-baseline gap-2">',
       '      <span class="font-black text-base-content">{{ author }}</span>',
       '      <span class="badge badge-ghost badge-xs" v-if="msg.payload && msg.payload.bot_id">APP</span>',
-      '      <span class="text-xs opacity-50">{{ time }}</span>',
+      '      <a v-if="permalink" class="text-xs opacity-50 hover:underline" :href="permalink"',
+      '         :title="\'Permalink to this message\'" @click.stop.prevent="$emit(\'navigate\', linkTarget)">{{ time }}</a>',
+      '      <span v-else class="text-xs opacity-50">{{ time }}</span>',
       '    </div>',
       '    <div class="text whitespace-pre-wrap break-words" v-html="html"></div>',
       '    <button v-if="showThreadBar && msg.reply_count > 0" class="thread-bar btn btn-ghost btn-xs -ml-1 mt-0.5 px-1 text-primary"',
