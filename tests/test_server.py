@@ -23,7 +23,15 @@ def _populate(db: Path) -> None:
         storage.upsert_users(
             conn,
             [
-                {"id": "U1", "name": "alice", "real_name": "Alice Smith"},
+                {
+                    "id": "U1",
+                    "name": "alice",
+                    "real_name": "Alice Smith",
+                    "profile": {
+                        "image_512": "https://ca.slack-edge.com/U1-512.png",
+                        "image_192": "https://ca.slack-edge.com/U1-192.png",
+                    },
+                },
                 {"id": "U2", "name": "bob", "real_name": ""},
             ],
         )
@@ -81,6 +89,13 @@ def test_list_users(client: TestClient) -> None:
     by_id = {u["id"]: u for u in body["users"]}
     assert by_id["U1"]["display_name"] == "Alice Smith (alice)"
     assert by_id["U2"]["display_name"] == "bob"
+
+
+def test_list_users_avatar_picks_largest_image(client: TestClient) -> None:
+    body = client.get("/api/users").json()
+    by_id = {u["id"]: u for u in body["users"]}
+    assert by_id["U1"]["avatar"] == "https://ca.slack-edge.com/U1-512.png"
+    assert by_id["U2"]["avatar"] is None
 
 
 def test_list_channels_with_counts(client: TestClient) -> None:

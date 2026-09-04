@@ -72,6 +72,27 @@ def _display_name(user: storage.CachedUser) -> str:
     return user.real_name or user.name or user.id
 
 
+# Slack profile image fields, best size first.
+AVATAR_IMAGE_FIELDS = (
+    "image_512",
+    "image_192",
+    "image_72",
+    "image_48",
+    "image_32",
+    "image_24",
+)
+
+
+def _avatar_url(user: storage.CachedUser) -> str | None:
+    """Pick the best available profile image URL from a cached user."""
+    profile = user.payload.get("profile") or {}
+    for field in AVATAR_IMAGE_FIELDS:
+        url = profile.get(field)
+        if url:
+            return str(url)
+    return None
+
+
 def _user_payload(user: storage.CachedUser) -> dict[str, Any]:
     """Reduce a cached user to the fields the web UI needs."""
     profile = user.payload.get("profile") or {}
@@ -83,6 +104,7 @@ def _user_payload(user: storage.CachedUser) -> dict[str, Any]:
         "is_bot": bool(user.payload.get("is_bot")),
         "tz": user.payload.get("tz"),
         "title": profile.get("title"),
+        "avatar": _avatar_url(user),
     }
 
 

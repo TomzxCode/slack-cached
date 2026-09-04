@@ -201,6 +201,7 @@
         channels: [],
         channelsById: {},
         userNames: {},
+        userAvatars: {},
 
         view: 'home',            // 'home' | 'channel'
         channelId: null,
@@ -253,18 +254,17 @@
 
     methods: {
       // Expose helpers used by the in-DOM template.
-      initials: initials,
       fmtRelative: fmtRelative,
       fmtTime: fmtTime,
       tsToDate: tsToDate,
       highlightTerms: highlightTerms,
 
-      avatarStyle: function (id) {
-        return { background: colorFor(id) };
-      },
-
       msgCtx: function () {
-        return { userNames: this.userNames, channelsById: this.channelsById };
+        return {
+          userNames: this.userNames,
+          channelsById: this.channelsById,
+          userAvatars: this.userAvatars,
+        };
       },
 
       groupTitle: function (type) {
@@ -316,10 +316,15 @@
           self.channels = results[2].channels;
           var byId = {};
           var names = {};
+          var avatars = {};
           self.channels.forEach(function (c) { byId[c.id] = c; });
-          self.users.forEach(function (u) { names[u.id] = u.display_name; });
+          self.users.forEach(function (u) {
+            names[u.id] = u.display_name;
+            avatars[u.id] = u.avatar || '';
+          });
           self.channelsById = byId;
           self.userNames = names;
+          self.userAvatars = avatars;
           self.booted = true;
         }).catch(function (err) {
           self.toast('Failed to load cache: ' + err.message, 'error');
@@ -702,6 +707,36 @@
     },
   });
 
+  // One avatar: the user's photo when available, else the colored
+  // initials placeholder (also used as the on-image-error fallback).
+  app.component('user-avatar', {
+    props: {
+      src: { type: String, default: '' },
+      name: { type: String, required: true },
+      id: { type: String, default: '' },
+      boxClass: { type: String, default: 'w-9 rounded-md' },
+      textClass: { type: String, default: 'text-[11px] font-bold uppercase' },
+    },
+    data: function () { return { failed: false }; },
+    computed: {
+      showImage: function () { return this.src && !this.failed; },
+      style: function () {
+        return this.showImage ? undefined : { background: colorFor(this.id || this.name) };
+      },
+    },
+    methods: { initials: initials },
+    template: [
+      // daisyUI 5 centers initials via the single .avatar-placeholder class.
+      '<div class="avatar" :class="{ \'avatar-placeholder\': !showImage }">',
+      '  <div class="overflow-hidden" :class="boxClass" :style="style">',
+      '    <img v-if="showImage" :src="src" :alt="name" loading="lazy"',
+      '         referrerpolicy="no-referrer" @error="failed = true">',
+      '    <span v-else :class="textClass">{{ initials(name) }}</span>',
+      '  </div>',
+      '</div>',
+    ].join(''),
+  });
+
   // One message (avatar, author, time, mrkdwn text, optional thread bar).
   // ``ctx`` carries the user/channel maps needed for mention resolution.
   app.component('message-row', {
@@ -716,17 +751,16 @@
       html: function () { return renderMessageHtml(this.msg, this.ctx); },
       author: function () { return this.msg.user_name || this.msg.user || 'unknown'; },
       time: function () { return fmtTime(tsToDate(this.msg.ts)); },
+      avatar: function () {
+        return (this.ctx.userAvatars && this.ctx.userAvatars[this.msg.user]) || '';
+      },
     },
     methods: {
-      initials: initials,
       rel: fmtRelative,
-      avatarStyle: function () { return { background: colorFor(this.msg.user) }; },
     },
     template: [
       '<div class="msg flex gap-2.5 px-5 py-1" :id="\'m-\' + msg.ts.replace(\'.\', \'-\')" :class="{highlight: highlight}">',
-      '  <div class="avatar placeholder">',
-      '    <div class="w-9 rounded-md" :style="avatarStyle()"><span class="text-[11px] font-bold uppercase">{{ initials(author) }}</span></div>',
-      '  </div>',
+      '  <user-avatar :src="avatar" :name="author" :id="msg.user"></user-avatar>',
       '  <div class="min-w-0 flex-1">',
       '    <div class="flex items-baseline gap-2">',
       '      <span class="font-black text-base-content">{{ author }}</span>',

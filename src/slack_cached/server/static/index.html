@@ -110,11 +110,8 @@
             <ul class="menu w-full px-2 p-0 text-sm">
               <li v-for="u in users" :key="u.id">
                 <a class="side-item" :class="{'menu-active': profile && profile.id === u.id}" @click.stop="showProfile(u)">
-                  <div class="avatar placeholder">
-                    <div class="w-6 rounded" :style="avatarStyle(u.id)">
-                      <span class="text-[10px] font-bold uppercase">{{ initials(u.display_name) }}</span>
-                    </div>
-                  </div>
+                  <user-avatar class="flex-none" :src="u.avatar" :name="u.display_name" :id="u.id"
+                               box-class="w-6 rounded" text-class="text-[10px] font-bold uppercase"></user-avatar>
                   <span class="flex-1 truncate">{{ u.display_name }}</span>
                   <span class="text-[11px] opacity-50" v-if="u.is_bot">bot</span>
                 </a>
@@ -276,11 +273,9 @@
               <span v-if="item.type === 'channel'" class="w-5 flex-none text-center opacity-70">
                 {{ item.is_private ? '&#128274;' : '#' }}
               </span>
-              <span v-else-if="item.type === 'person'" class="avatar placeholder flex-none">
-                <div class="w-6 rounded" :style="avatarStyle(item.user.id)">
-                  <span class="text-[10px] font-bold uppercase">{{ initials(item.user.display_name) }}</span>
-                </div>
-              </span>
+              <user-avatar v-else-if="item.type === 'person'" class="flex-none"
+                           :src="item.user.avatar" :name="item.user.display_name" :id="item.user.id"
+                           box-class="w-6 rounded" text-class="text-[10px] font-bold uppercase"></user-avatar>
               <span v-else class="w-5 flex-none text-center opacity-70">&#128172;</span>
 
               <span class="min-w-0 flex-1 truncate">
@@ -322,11 +317,8 @@
          v-if="profile" @click.stop>
       <div class="card-body gap-3 p-4">
         <div class="flex items-center gap-3">
-          <div class="avatar placeholder">
-            <div class="w-12 rounded-lg" :style="avatarStyle(profile.id)">
-              <span class="text-sm font-bold uppercase">{{ initials(profile.display_name) }}</span>
-            </div>
-          </div>
+          <user-avatar :src="profile.avatar" :name="profile.real_name || profile.display_name" :id="profile.id"
+                       box-class="w-12 rounded-lg" text-class="text-sm font-bold uppercase"></user-avatar>
           <div class="min-w-0">
             <div class="truncate font-black text-base-content">{{ profile.real_name || profile.display_name }}</div>
             <div class="text-sm text-primary" v-if="profile.name">@{{ profile.name }}</div>
