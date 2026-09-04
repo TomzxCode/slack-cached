@@ -155,7 +155,7 @@
     // Channel mentions <#C123|name>.
     s = s.replace(/&lt;#(C[A-Z0-9]+)(?:\|([^&]*))?&gt;/g, function (_, cid, label) {
       var chan = ctx.channelsById[cid];
-      var name = label || (chan && chan.name) || cid;
+      var name = label || (chan && (chan.display_name || chan.name)) || cid;
       return '<span class="mention channel-mention" data-channel="' + cid + '">#' +
         escapeHtml(name) + '</span>';
     });
@@ -335,7 +335,7 @@
         this.view = 'channel';
         this.channelId = channelId;
         this.channel = this.channelsById[channelId] ||
-          { id: channelId, name: null, is_private: null };
+          { id: channelId, name: null, display_name: null, is_im: null, is_private: null };
         this.messages = [];
         this.hasMore = false;
         this.loadingMessages = true;
@@ -489,20 +489,22 @@
 
       localMatches: function (q) {
         var needle = q.trim().toLowerCase();
+        var label = function (c) { return c.display_name || c.name || c.id; };
         var channels = this.channels.filter(function (c) {
           if (!needle) return true;
-          return (c.name || '').toLowerCase().indexOf(needle) !== -1 ||
+          return label(c).toLowerCase().indexOf(needle) !== -1 ||
             c.id.toLowerCase().indexOf(needle) !== -1;
         }).sort(function (a, b) {
-          var aStarts = (a.name || '').toLowerCase().startsWith(needle) ? 1 : 0;
-          var bStarts = (b.name || '').toLowerCase().startsWith(needle) ? 1 : 0;
+          var aStarts = label(a).toLowerCase().startsWith(needle) ? 1 : 0;
+          var bStarts = label(b).toLowerCase().startsWith(needle) ? 1 : 0;
           return (bStarts - aStarts) || (b.message_count - a.message_count);
         }).slice(0, 8).map(function (c) {
           return {
             key: 'c-' + c.id,
             type: 'channel',
             id: c.id,
-            name: c.name || c.id,
+            name: label(c),
+            is_im: c.is_im,
             is_private: c.is_private,
             message_count: c.message_count,
           };

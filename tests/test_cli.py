@@ -642,6 +642,86 @@ def test_show_channel_with_name(
     assert "general" in out
 
 
+class DirectChannelClient(FakeChannelClient):
+    """Stub client whose only channel is a direct message with user U9."""
+
+    async def iter_channels(self, types="public_channel", limit=1000):
+        # Like real Slack, IM conversations carry no name, only the peer.
+        yield {"id": "D1", "is_im": True, "user": "U9"}
+
+    async def iter_users(self, limit: int = 1000):
+        yield {"id": "U9", "name": "tomzx", "real_name": "Tom Rochette"}
+
+
+def test_show_direct_channel_resolves_peer_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A direct channel shows its peer user's name, not the raw D id."""
+    db_path = tmp_path / "cache.db"
+    client = DirectChannelClient(
+        messages=[{"ts": "1700000000.000100", "user": "U9", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: client)
+
+    rc = cli.main(["fetch-users", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch-channels", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch", "--channel", "D1", "--db", str(db_path)])
+    assert rc == 0
+
+    rc = cli.main(["show", "--channel", "D1", "--db", str(db_path), "--no-fetch"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "Channel Tom Rochette (tomzx)" in out
+    assert "Channel D1" not in out
+
+
+def test_show_direct_channel_json_resolves_peer_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "cache.db"
+    client = DirectChannelClient(
+        messages=[{"ts": "1700000000.000100", "user": "U9", "text": "hello"}]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: client)
+
+    rc = cli.main(["fetch-users", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch-channels", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch", "--channel", "D1", "--db", str(db_path)])
+    assert rc == 0
+
+    rc = cli.main(["show", "--channel", "D1", "--db", str(db_path), "--no-fetch", "--json"])
+    assert rc == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["channel"] == "D1"
+    assert payload["channel_name"] == "Tom Rochette (tomzx)"
+
+
+def test_show_channels_labels_direct_channels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show-channels renders direct channels with their peer's name."""
+    db_path = tmp_path / "cache.db"
+    client = DirectChannelClient()
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: client)
+
+    rc = cli.main(["fetch-users", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch-channels", "--db", str(db_path)])
+    assert rc == 0
+
+    rc = cli.main(["show-channels", "--db", str(db_path), "--no-fetch"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "D1  Tom Rochette (tomzx) (direct)" in out
+
+
 def test_show_channel_resolves_bare_name(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -832,6 +912,45 @@ def test_search_human_output(
     assert "1 match(es)" in err
     assert "1 thread(s) (0 existing, 1 new)" in err
     assert "1 message(s) (0 existing, 1 new)" in err
+
+
+def test_search_direct_channel_hit_shows_peer_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A search hit in a direct channel is labelled with the peer's name."""
+    db_path = tmp_path / "cache.db"
+
+    class DirectSearchClient(FakeSearchClient):
+        async def iter_channels(self, types="public_channel", limit=1000):
+            yield {"id": "D1", "is_im": True, "user": "U1"}
+
+        async def iter_users(self, limit: int = 1000):
+            yield {"id": "U1", "name": "tomzx", "real_name": "Tom Rochette"}
+
+    client = DirectSearchClient(
+        matches=[
+            {
+                "ts": "1700000000.000100",
+                "thread_ts": "1700000000.000100",
+                "user": "U1",
+                "text": "hello from the dm",
+                "channel": "D1",
+                "permalink": "https://acme.slack.com/archives/D1/p1700000000000100",
+            },
+        ]
+    )
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda args: client)
+
+    rc = cli.main(["fetch-channels", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["fetch-users", "--db", str(db_path)])
+    assert rc == 0
+    rc = cli.main(["search", "hello", "--db", str(db_path)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "[Tom Rochette (tomzx)]" in out
+    assert "[D1]" not in out
 
 
 def test_search_json_output(

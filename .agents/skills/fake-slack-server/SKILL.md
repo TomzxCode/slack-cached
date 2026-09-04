@@ -91,6 +91,7 @@ curl -s "http://localhost:8199/api/conversations.history?channel=C0001" | python
 | `--seed` | `42` | Random seed. Same seed always produces identical data. |
 | `--num-users` | `20` | Number of workspace members to generate. |
 | `--num-channels` | `13` | Number of channels. |
+| `--num-ims` | `4` | Number of direct message conversations (`D...` ids with no `name`, peer in `user`). |
 | `--num-threads` | `30` | Number of conversation threads. |
 | `--messages-per-thread` | `3-12` | Message count per thread (`N` for exact, `N-M` for range). |
 | `--activity-ratio` | `0.6` | Fraction of users who actively post. |
@@ -127,10 +128,10 @@ Use the `Workspace` and `run_server` classes/functions directly in Python
 from slack_cached.fake_slack import Workspace, WorkspaceParams, run_server
 
 # Generate workspace data without starting a server
-params = WorkspaceParams(seed=42, num_users=10, num_channels=5, num_threads=15)
+params = WorkspaceParams(seed=42, num_users=10, num_channels=5, num_ims=2, num_threads=15)
 workspace = Workspace(params=params)
 print(len(workspace.users))   # 10
-print(len(workspace.channels))  # 5
+print(len(workspace.channels))  # 7 (5 channels + 2 direct messages)
 print(len(workspace.threads))   # 15
 
 # Start an HTTP server

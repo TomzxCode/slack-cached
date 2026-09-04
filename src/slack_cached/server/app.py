@@ -134,6 +134,27 @@ def create_app(
     def _resolve_names(conn: sqlite3.Connection, user_ids: list[str | None]) -> dict[str, str]:
         return storage.load_user_display_names(conn, [u for u in user_ids if u])
 
+    def _channel_view(
+        conn: sqlite3.Connection, channel: storage.CachedChannel | None, channel_id: str
+    ) -> dict[str, Any]:
+        """Serialize a cached channel for the web UI, resolving DM peer names."""
+        if channel is None:
+            return {
+                "id": channel_id,
+                "name": None,
+                "display_name": None,
+                "is_im": False,
+                "is_private": None,
+            }
+        display = storage.load_channel_display_names(conn, [channel_id]).get(channel_id)
+        return {
+            "id": channel.id,
+            "name": channel.name,
+            "display_name": display or channel.name,
+            "is_im": bool(channel.payload.get("is_im")),
+            "is_private": channel.is_private,
+        }
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
@@ -157,9 +178,18 @@ def create_app(
     @fastapp.get("/api/channels")
     async def list_channels(conn: Conn) -> dict[str, Any]:
         channels = storage.list_channel_summaries(conn)
+        ids = [c.id for c in channels]
+        display = storage.load_channel_display_names(conn, ids)
+        ims = storage.load_im_channel_ids(conn, ids)
+        payload = []
+        for c in channels:
+            d = asdict(c)
+            d["display_name"] = display.get(c.id) or c.name
+            d["is_im"] = c.id in ims
+            payload.append(d)
         return {
             "channel_count": len(channels),
-            "channels": [asdict(c) for c in channels],
+            "channels": payload,
         }
 
     @fastapp.get("/api/channels/{channel_id}/messages")
@@ -175,11 +205,7 @@ def create_app(
         roots = storage.load_channel_thread_roots(conn, channel_id, before=before, limit=limit)
         names = _resolve_names(conn, [m.user for m in roots])
         return {
-            "channel": {
-                "id": channel_id,
-                "name": channel.name if channel else None,
-                "is_private": channel.is_private if channel else None,
-            },
+            "channel": _channel_view(conn, channel, channel_id),
             "messages": _with_names(roots, names),
             "has_more": len(roots) == limit,
         }
@@ -195,11 +221,7 @@ def create_app(
             )
         names = _resolve_names(conn, [m.user for m in messages])
         return {
-            "channel": {
-                "id": channel_id,
-                "name": channel.name if channel else None,
-                "is_private": channel.is_private if channel else None,
-            },
+            "channel": _channel_view(conn, channel, channel_id),
             "thread_ts": thread_ts,
             "messages": _with_names(messages, names),
         }
@@ -212,17 +234,16 @@ def create_app(
     ) -> dict[str, Any]:
         hits = storage.search_messages(conn, q, limit=limit)
         names = _resolve_names(conn, [h.user for h in hits])
-        channels = {
-            c.id: c.name
-            for c in (storage.get_channel(conn, h.channel) for h in hits)
-            if c is not None
-        }
+        channel_ids = list(dict.fromkeys(h.channel for h in hits))
+        channels = storage.load_channel_display_names(conn, channel_ids)
+        ims = storage.load_im_channel_ids(conn, channel_ids)
         return {
             "query": q,
             "hits": [
                 {
                     "channel": h.channel,
                     "channel_name": channels.get(h.channel, h.channel),
+                    "channel_is_im": h.channel in ims,
                     "thread_ts": h.thread_ts,
                     "ts": h.ts,
                     "user": h.user,

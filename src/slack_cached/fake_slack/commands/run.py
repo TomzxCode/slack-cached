@@ -30,6 +30,10 @@ def run_fake_server(
     seed: Annotated[int, Parameter(help="Random seed for data generation (default: 42).")] = 42,
     num_users: Annotated[int, Parameter(help="Number of workspace members (default: 20).")] = 20,
     num_channels: Annotated[int, Parameter(help="Number of channels (default: 13).")] = 13,
+    num_ims: Annotated[
+        int,
+        Parameter(help="Number of direct message conversations (default: 4)."),
+    ] = 4,
     num_threads: Annotated[
         int, Parameter(help="Number of conversation threads (default: 30).")
     ] = 30,
@@ -60,6 +64,7 @@ def run_fake_server(
         seed=seed,
         num_users=num_users,
         num_channels=num_channels,
+        num_ims=num_ims,
         num_threads=num_threads,
         min_messages_per_thread=min_mpt,
         max_messages_per_thread=max_mpt,

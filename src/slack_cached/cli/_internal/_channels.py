@@ -5,7 +5,7 @@ import sys
 from collections.abc import Iterable
 
 from slack_cached.cli._internal._shared import CommonArgs
-from slack_cached.storage import get_channel, load_channels
+from slack_cached.storage import load_channel_display_names, load_channels
 
 
 def _is_channel_id(token: str) -> bool:
@@ -29,17 +29,11 @@ def _channel_name_index(conn: sqlite3.Connection) -> dict[str, str]:
 def _channel_id_names(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> dict[str, str]:
     """Return a {channel_id: name} map for just the requested channels.
 
-    Uses one lookup per channel rather than loading every cached channel, so
-    cost scales with the matches rather than the whole workspace.
+    Direct channels resolve to the display name of the peer user. Uses one
+    lookup per channel rather than loading every cached channel, so cost
+    scales with the matches rather than the whole workspace.
     """
-    names: dict[str, str] = {}
-    for cid in dict.fromkeys(channel_ids):
-        if not cid:
-            continue
-        cached_ch = get_channel(conn, cid)
-        if cached_ch and cached_ch.name:
-            names[cid] = cached_ch.name
-    return names
+    return load_channel_display_names(conn, channel_ids)
 
 
 async def _resolve_channels(common: CommonArgs, entries: Iterable[str]) -> list[str] | None:

@@ -85,7 +85,7 @@
               <li v-for="c in channels" :key="c.id">
                 <a class="side-item" :class="{'menu-active': c.id === channelId}" @click.stop="openChannel(c.id)">
                   <span class="flex-1 truncate">
-                    <span v-if="c.is_private" class="opacity-70">&#128274;</span><span v-else>#</span>{{ c.name || c.id }}
+                    <span v-if="c.is_im" class="opacity-70">&#128172;</span><span v-else-if="c.is_private" class="opacity-70">&#128274;</span><span v-else>#</span>{{ c.display_name || c.name || c.id }}
                   </span>
                   <span class="badge badge-ghost badge-sm" v-if="c.message_count">{{ c.message_count }}</span>
                   <span class="text-[11px] opacity-50" v-if="c.latest_ts">{{ fmtRelative(c.latest_ts) }}</span>
@@ -137,7 +137,7 @@
       <main class="relative flex flex-1 flex-col overflow-hidden" v-if="view === 'channel' && channel">
         <header class="flex min-h-12 items-center gap-2.5 border-b border-base-content/10 px-5 py-2.5">
           <span class="channel-title text-base font-black text-base-content">
-            <span v-if="channel.is_private">&#128274;</span>#{{ channel.name || channel.id }}
+            <span v-if="channel.is_im" class="opacity-70">&#128172;</span><span v-else-if="channel.is_private">&#128274;</span><span v-else>#</span>{{ channel.display_name || channel.name || channel.id }}
           </span>
           <span class="badge badge-ghost badge-sm font-mono">{{ channel.id }}</span>
           <span class="flex-1"></span>
@@ -174,7 +174,7 @@
         <aside class="thread-panel absolute inset-y-0 right-0 z-30 flex w-[560px] max-w-[55%] flex-col bg-base-100 shadow-2xl border-l border-base-content/10"
                v-if="thread">
           <header class="flex items-center gap-2 border-b border-base-content/10 px-4 py-3 font-black text-base-content">
-            <span>Thread <span class="font-normal opacity-60">in #{{ channel.name || channel.id }}</span></span>
+            <span>Thread <span class="font-normal opacity-60">in <template v-if="!channel.is_im">#</template>{{ channel.display_name || channel.name || channel.id }}</span></span>
             <span class="flex-1"></span>
             <button class="btn btn-ghost btn-xs" :disabled="!!refreshing"
                     title="Refresh thread from Slack" @click.stop="refreshThread">
@@ -241,7 +241,7 @@
             <ul class="menu w-full p-0">
               <li v-for="c in recentChannels" :key="c.id">
                 <a @click.stop="openChannel(c.id)" class="justify-between">
-                  <span><span v-if="c.is_private" class="opacity-70">&#128274;</span>#{{ c.name || c.id }}</span>
+                  <span><span v-if="c.is_im" class="opacity-70">&#128172;</span><span v-else-if="c.is_private" class="opacity-70">&#128274;</span><span v-else>#</span>{{ c.display_name || c.name || c.id }}</span>
                   <span class="text-xs opacity-50">
                     {{ c.message_count }} {{ c.message_count === 1 ? 'message' : 'messages' }}
                     &middot; active {{ fmtRelative(c.latest_ts) }} ago
@@ -274,7 +274,8 @@
                     :class="{'active': i === paletteActive}"
                     @click.stop="chooseItem(item)" @mousemove="paletteActive = i">
               <span v-if="item.type === 'channel'" class="w-5 flex-none text-center opacity-70">
-                {{ item.is_private ? '&#128274;' : '#' }}
+                <template v-if="item.is_im">&#128172;</template>
+                <template v-else>{{ item.is_private ? '&#128274;' : '#' }}</template>
               </span>
               <span v-else-if="item.type === 'person'" class="avatar placeholder flex-none">
                 <div class="w-6 rounded" :style="avatarStyle(item.user.id)">
@@ -298,7 +299,8 @@
                 {{ item.message_count }} {{ item.message_count === 1 ? 'message' : 'messages' }}
               </span>
               <span class="flex-none text-xs opacity-50" v-else-if="item.type === 'message'">
-                #{{ item.hit.channel_name || item.hit.channel }}
+                <template v-if="item.hit.channel_is_im">{{ item.hit.channel_name || item.hit.channel }}</template>
+                <template v-else>#{{ item.hit.channel_name || item.hit.channel }}</template>
               </span>
             </button>
           </template>

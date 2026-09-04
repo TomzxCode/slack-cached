@@ -20,7 +20,7 @@ from slack_cached.cli._internal._shared import (
     _setup,
     app,
 )
-from slack_cached.storage import load_channels
+from slack_cached.storage import load_channel_display_names, load_channels
 
 log = structlog.get_logger(__name__)
 
@@ -41,6 +41,7 @@ async def show_channels(
     fmt = _output_format(json_output, jsonl_output)
     async with _client._open_db(common) as conn:
         channels = load_channels(conn)
+        display_names = load_channel_display_names(conn, [c.id for c in channels])
 
     if not channels and not no_fetch:
         from slack_cached.cache import fetch_channels
@@ -53,6 +54,7 @@ async def show_channels(
             if not load_channels(conn):
                 await fetch_channels(conn, client)
             channels = load_channels(conn)
+            display_names = load_channel_display_names(conn, [c.id for c in channels])
 
     if fmt in ("json", "jsonl"):
         payload = {"channel_count": len(channels), "channels": [asdict(c) for c in channels]}
@@ -60,5 +62,5 @@ async def show_channels(
             json.dumps(payload, ensure_ascii=False, indent=2 if fmt == "json" else None) + "\n"
         )
     else:
-        sys.stdout.write(_render_channels_human(channels))
+        sys.stdout.write(_render_channels_human(channels, display_names))
     return 0

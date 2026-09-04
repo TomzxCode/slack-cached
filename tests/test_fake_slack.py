@@ -55,7 +55,8 @@ class TestWorkspaceGeneration:
     def test_default_workspace_dimensions(self) -> None:
         ws = Workspace(seed=42)
         assert len(ws.users) == 20
-        assert len(ws.channels) == 13
+        assert len(ws.channels) == 17
+        assert len([c for c in ws.channels if c.get("is_im")]) == 4
         assert len(ws.threads) == 30
 
     def test_custom_dimensions(self) -> None:
@@ -63,14 +64,32 @@ class TestWorkspaceGeneration:
             seed=42,
             num_users=5,
             num_channels=3,
+            num_ims=2,
             num_threads=10,
             min_messages_per_thread=2,
             max_messages_per_thread=4,
         )
         ws = Workspace(params=params)
         assert len(ws.users) == 5
-        assert len(ws.channels) == 3
+        assert len(ws.channels) == 5
+        assert len([c for c in ws.channels if c.get("is_im")]) == 2
         assert len(ws.threads) == 10
+
+    def test_ims_reference_existing_users(self) -> None:
+        ws = Workspace(seed=42)
+        user_ids = {u["id"] for u in ws.users}
+        for channel in ws.channels:
+            if not channel.get("is_im"):
+                continue
+            # Direct channels carry no name and point at their peer user.
+            assert "name" not in channel
+            assert channel["user"] in user_ids
+
+    def test_ims_have_threads(self) -> None:
+        ws = Workspace(seed=42)
+        im_ids = {c["id"] for c in ws.channels if c.get("is_im")}
+        thread_channels = {channel for channel, _ts in ws.threads}
+        assert im_ids & thread_channels
 
     def test_same_seed_produces_same_data(self) -> None:
         ws1 = Workspace(seed=42)
@@ -174,14 +193,16 @@ class TestConversationsList:
     def test_returns_all_channels(self, fake_server: str) -> None:
         data = _get(fake_server, "/api/conversations.list")
         assert data["ok"] is True
-        assert len(data["channels"]) == 13
+        assert len(data["channels"]) == 17
 
     def test_channels_have_required_fields(self, fake_server: str) -> None:
         data = _get(fake_server, "/api/conversations.list")
         for channel in data["channels"]:
             assert "id" in channel
-            assert "name" in channel
-            assert "is_private" in channel
+            assert "is_im" in channel
+            if not channel["is_im"]:
+                assert "name" in channel
+                assert "is_private" in channel
 
     def test_filter_public_channels(self, fake_server: str) -> None:
         data = _get(fake_server, "/api/conversations.list", {"types": "public_channel"})
@@ -206,7 +227,7 @@ class TestConversationsList:
         data = _get(fake_server, "/api/conversations.list", {"types": "private_channel,im"})
         assert data["ok"] is True
         for ch in data["channels"]:
-            assert ch["is_private"] is True
+            assert ch.get("is_private") is True or ch["is_im"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +382,14 @@ class TestParameterCombinations:
             seed=42,
             num_users=100,
             num_channels=25,
+            num_ims=6,
             num_threads=50,
             min_messages_per_thread=2,
             max_messages_per_thread=8,
         )
         ws = Workspace(params=params)
         assert len(ws.users) == 100
-        assert len(ws.channels) == 25
+        assert len(ws.channels) == 31
         assert len(ws.threads) == 50
 
     def test_small_workspace(self) -> None:
@@ -375,6 +397,7 @@ class TestParameterCombinations:
             seed=42,
             num_users=3,
             num_channels=2,
+            num_ims=0,
             num_threads=5,
             min_messages_per_thread=2,
             max_messages_per_thread=3,
@@ -632,7 +655,8 @@ class TestSearchMessages:
         )
         # The same message fetched via conversations.replies is plain.
         channel = match["channel"]["id"]
-        thread_ts = match["ts"]
+        # Search drops thread_ts on thread parents; replies keep it.
+        thread_ts = match.get("thread_ts") or match["ts"]
         replies = _get(
             fake_server,
             "/api/conversations.replies",

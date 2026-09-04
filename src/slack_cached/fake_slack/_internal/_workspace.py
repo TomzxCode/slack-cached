@@ -51,7 +51,7 @@ class Workspace:
         rng = random.Random(self.params.seed)
 
         self.users = _generate_users(rng, self.params)
-        self.channels = _generate_channels(rng, self.params)
+        self.channels = _generate_channels(rng, self.params, self.users)
         self.threads = _generate_threads(rng, self.params, self.channels, self.users)
         log.info(
             "workspace_generated",
@@ -191,11 +191,11 @@ class Workspace:
         - ``edited`` is omitted; ``conversations.replies`` includes it.
         """
         terms = [t.lower() for t in query.split() if t]
-        channel_names = {c["id"]: c["name"] for c in self.channels}
+        channel_names = {c["id"]: c.get("name") for c in self.channels}
 
         matches: list[dict[str, Any]] = []
         for (channel, _thread_ts), messages in self.threads.items():
-            ch_name = channel_names.get(channel, channel)
+            ch_name = channel_names.get(channel, channel) or channel
             for msg in messages:
                 text = (msg.get("text") or "").lower()
                 if terms and not all(term in text for term in terms):

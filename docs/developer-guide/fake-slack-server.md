@@ -8,7 +8,7 @@ The fake Slack server provides a deterministic, local HTTP server that mimics th
 slack-fake-server
 ```
 
-This starts a server on `127.0.0.1:8199` with default settings (seed 42, 20 users, 13 channels, 30 threads).
+This starts a server on `127.0.0.1:8199` with default settings (seed 42, 20 users, 13 channels, 4 direct messages, 30 threads).
 
 ## Configuration options
 
@@ -23,6 +23,7 @@ slack-fake-server [OPTIONS]
 | `--seed` | `42` | Random seed for deterministic data |
 | `--num-users` | `20` | Number of workspace members |
 | `--num-channels` | `13` | Number of channels |
+| `--num-ims` | `4` | Number of direct message conversations |
 | `--num-threads` | `30` | Number of conversation threads |
 | `--messages-per-thread` | `3-12` | Messages per thread (`N` or `N-M` range) |
 | `--activity-ratio` | `0.6` | Fraction of users who actively post |
@@ -36,7 +37,7 @@ slack-fake-server [OPTIONS]
 | GET | `/api/conversations.replies` | Fetch thread replies |
 | GET | `/api/conversations.history` | Fetch channel messages |
 | GET | `/api/users.list` | List workspace users |
-| GET | `/api/conversations.list` | List channels |
+| GET | `/api/conversations.list` | List channels (supports `types=im` for direct messages) |
 | POST | `/api/chat.postMessage` | Post a new message or reply |
 
 All endpoints return Slack-compatible JSON with cursor-based pagination.
