@@ -28,6 +28,7 @@ from slack_cached.cli._internal._shared import (
     TsArg,
     UrlArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     _timed,
     app,
@@ -59,6 +60,7 @@ async def show(
         ),
     ] = "1d",
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     verbose: VerboseArg = False,
 ) -> int:
@@ -69,7 +71,7 @@ async def show(
     When --channel is given without --ts, shows all messages for that channel
     (fetching first if needed, unless --no-fetch).
     """
-    common = _setup(db, api_base_url, verbose)
+    common = _setup(db, api_base_url, verbose, workspace)
     fmt = _output_format(json_output, jsonl_output)
 
     if channel:
@@ -83,35 +85,41 @@ async def show(
     log.debug("cmd_show_start")
     with _timed("resolve_ref"):
         ref = _resolve_ref(url, channel, ts)
-    with _client._open_db(common) as conn:
-        state = get_thread_state(conn, ref.channel, ref.thread_ts)
-        if state is None and not no_fetch:
-            log.info(
-                "thread_not_cached_fetching",
-                channel=ref.channel,
-                thread_ts=ref.thread_ts,
-                thread_ts_iso=_format_ts(ref.thread_ts),
-            )
-            if verbose:
-                print(
-                    f"fetching thread {ref.channel}/{ref.thread_ts} from Slack...",
-                    file=sys.stderr,
+
+    # Read first from the offline-resolved workspace database; only hit the
+    # network (and its auth.test-resolved workspace) on a cache miss.
+    need_fetch = False
+    async with _client._open_db(common) as conn:
+        if get_thread_state(conn, ref.channel, ref.thread_ts) is not None or no_fetch:
+            messages, user_names, channel_name = _load_thread_view(conn, ref)
+        else:
+            need_fetch = True
+
+    if need_fetch:
+        # Imported lazily so the cached-read path does not pull in the
+        # httpx-based Slack client (see _build_client).
+        from slack_cached.cache import fetch_thread
+
+        async with (
+            _client._open_client(common) as client,
+            _client._open_db(common, client) as conn,
+        ):
+            if get_thread_state(conn, ref.channel, ref.thread_ts) is None:
+                log.info(
+                    "thread_not_cached_fetching",
+                    channel=ref.channel,
+                    thread_ts=ref.thread_ts,
+                    thread_ts_iso=_format_ts(ref.thread_ts),
                 )
-            # Imported lazily so the cached-read path does not pull in the
-            # httpx-based Slack client (see _build_client).
-            from slack_cached.cache import fetch_thread
-
-            async with _client._open_client(common) as client:
+                if verbose:
+                    print(
+                        f"fetching thread {ref.channel}/{ref.thread_ts} from Slack...",
+                        file=sys.stderr,
+                    )
                 await fetch_thread(conn, client, ref)
-        with _timed("load_thread"):
-            messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
-        log.debug("loaded_messages", count=len(messages))
-        with _timed("build_user_names"):
-            user_names = _build_user_names(conn, messages)
-        log.debug("loaded_user_names", count=len(user_names))
-        cached_ch = get_channel(conn, ref.channel)
-        channel_name = cached_ch.name if cached_ch else None
+            messages, user_names, channel_name = _load_thread_view(conn, ref)
 
+    log.debug("loaded_messages", count=len(messages))
     with _timed("render", format=fmt, messages=len(messages)):
         if fmt in ("json", "jsonl"):
             output = _render_json(
@@ -129,29 +137,48 @@ async def show(
     return 0
 
 
+def _load_thread_view(conn, ref) -> tuple[list, dict[str, str], str | None]:
+    """Load a thread's messages plus resolved user/channel names from ``conn``."""
+    messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
+    user_names = _build_user_names(conn, messages)
+    cached_ch = get_channel(conn, ref.channel)
+    channel_name = cached_ch.name if cached_ch else None
+    return messages, user_names, channel_name
+
+
 async def _show_channel(
     common: CommonArgs, channel: str, no_fetch: bool, last: str, fmt: str
 ) -> int:
     """Show all messages for a channel, fetching first if needed."""
     oldest = _oldest_ts_from_last(last)
-    with _client._open_db(common) as conn:
-        messages = load_channel_messages(conn, channel)
-        if not messages and not no_fetch:
-            log.info("channel_not_cached_fetching", channel=channel)
-            if common.verbose:
-                print(
-                    f"fetching messages for {channel} from Slack...",
-                    file=sys.stderr,
-                )
-            from slack_cached.cache import fetch_channel_messages
 
-            async with _client._open_client(common) as client:
-                await fetch_channel_messages(conn, client, channel, oldest=oldest)
-            messages = load_channel_messages(conn, channel)
-        with _timed("build_user_names"):
-            user_names = _build_user_names(conn, messages)
+    # Read first from the offline-resolved workspace database; only hit the
+    # network (and its auth.test-resolved workspace) on a cache miss.
+    async with _client._open_db(common) as conn:
+        messages = load_channel_messages(conn, channel)
+        user_names = _build_user_names(conn, messages)
         cached_ch = get_channel(conn, channel)
         channel_name = cached_ch.name if cached_ch else None
+
+    if not messages and not no_fetch:
+        from slack_cached.cache import fetch_channel_messages
+
+        async with (
+            _client._open_client(common) as client,
+            _client._open_db(common, client) as conn,
+        ):
+            if not load_channel_messages(conn, channel):
+                log.info("channel_not_cached_fetching", channel=channel)
+                if common.verbose:
+                    print(
+                        f"fetching messages for {channel} from Slack...",
+                        file=sys.stderr,
+                    )
+                await fetch_channel_messages(conn, client, channel, oldest=oldest)
+            messages = load_channel_messages(conn, channel)
+            user_names = _build_user_names(conn, messages)
+            cached_ch = get_channel(conn, channel)
+            channel_name = cached_ch.name if cached_ch else None
 
     with _timed("render", format=fmt, messages=len(messages)):
         if fmt in ("json", "jsonl"):

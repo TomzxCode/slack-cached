@@ -41,14 +41,23 @@ Credentials are loaded in this order:
 
 ## Cache location
 
-The default cache database lives at
-`$XDG_CACHE_HOME/slackx/threads.db` (or `~/.cache/slackx/threads.db`).
-Override with `--db /path/to/file.db`.
+Each Slack workspace gets its own cache database at
+`$XDG_CACHE_HOME/slackx/<workspace>/threads.db`
+(e.g. `~/.cache/slackx/acme/threads.db`). The workspace is determined from
+the configured token/cookie via `auth.test` on first use, then cached on disk
+so later commands need no extra API call; the most recently used workspace is
+also remembered so read-only commands (e.g. `show --no-fetch`) work offline.
+
+Override with `--workspace <name>` to pick a workspace explicitly, or
+`--db /path/to/file.db` for a database path outside the per-workspace layout.
+An existing pre-workspace `~/.cache/slackx/threads.db` is left in place;
+offline reads fall back to it only while no workspace cache exists yet.
 
 ## Usage
 
 All commands accept `-v/--verbose` for debug logging on stderr, `--db` to
-override the cache location, and `--api-base-url` to override the Slack API
+override the cache location, `--workspace` to select the per-workspace cache
+explicitly, and `--api-base-url` to override the Slack API
 base URL (defaults to `https://slack.com/api`; also settable via
 `SLACK_API_BASE_URL`).
 

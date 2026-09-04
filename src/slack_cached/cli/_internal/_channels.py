@@ -66,20 +66,33 @@ async def _resolve_channels(common: CommonArgs, entries: Iterable[str]) -> list[
 
     from slack_cached.cache import fetch_channels
 
-    with _client._open_db(common) as conn:
-        name_to_id = _channel_name_index(conn)
-        if any(n not in name_to_id for n in names):
-            async with _client._open_client(common) as client:
+    # Resolve against the offline-resolved workspace database first; only hit
+    # the network (and its auth.test-resolved workspace) when names are
+    # missing from the cache.
+    name_to_id: dict[str, str] = {}
+    try:
+        async with _client._open_db(common) as conn:
+            name_to_id = _channel_name_index(conn)
+    except SystemExit:
+        name_to_id = {}
+
+    if any(n not in name_to_id for n in names):
+        async with (
+            _client._open_client(common) as client,
+            _client._open_db(common, client) as conn,
+        ):
+            name_to_id = _channel_name_index(conn)
+            if any(n not in name_to_id for n in names):
                 await fetch_channels(conn, client)
             name_to_id = _channel_name_index(conn)
 
-        unresolved: list[str] = []
-        for name in names:
-            channel_id = name_to_id.get(name)
-            if channel_id is None:
-                unresolved.append(name)
-            else:
-                resolved.append(channel_id)
+    unresolved: list[str] = []
+    for name in names:
+        channel_id = name_to_id.get(name)
+        if channel_id is None:
+            unresolved.append(name)
+        else:
+            resolved.append(channel_id)
 
     if unresolved:
         joined = ", ".join(unresolved)

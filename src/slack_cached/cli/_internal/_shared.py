@@ -12,8 +12,6 @@ from typing import Annotated
 import structlog
 from cyclopts import App, Parameter
 
-from slack_cached.config import default_db_path
-
 log = structlog.get_logger(__name__)
 
 app = App(
@@ -29,7 +27,15 @@ app = App(
 
 DbArg = Annotated[
     Path | None,
-    Parameter(help=f"SQLite cache path (default: {default_db_path()})."),
+    Parameter(help="SQLite cache path (default: per-workspace, under the cache dir)."),
+]
+WorkspaceArg = Annotated[
+    str | None,
+    Parameter(
+        help="Workspace name selecting the per-workspace cache database "
+        "(~/.cache/slackx/WORKSPACE/threads.db). Discovered automatically via "
+        "auth.test when omitted.",
+    ),
 ]
 ApiBaseUrlArg = Annotated[
     str | None,
@@ -82,9 +88,10 @@ TsArg = Annotated[
 
 @dataclass
 class CommonArgs:
-    """Carries the shared db/api-base-url/verbose flags through internal helpers."""
+    """Carries the shared db/workspace/api-base-url/verbose flags through helpers."""
 
     db: Path | None = None
+    workspace: str | None = None
     api_base_url: str | None = None
     verbose: bool = False
 
@@ -102,9 +109,11 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _setup(db: Path | None, api_base_url: str | None, verbose: bool) -> CommonArgs:
+def _setup(
+    db: Path | None, api_base_url: str | None, verbose: bool, workspace: str | None = None
+) -> CommonArgs:
     """Build the CommonArgs carrier and wire up logging in one place."""
-    common = CommonArgs(db=db, api_base_url=api_base_url, verbose=verbose)
+    common = CommonArgs(db=db, workspace=workspace, api_base_url=api_base_url, verbose=verbose)
     _configure_logging(verbose)
     log.debug("dispatch")
     return common

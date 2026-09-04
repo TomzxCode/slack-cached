@@ -21,6 +21,8 @@ cli.py (cyclopts subcommands)
   +-- urls.py (permalink parsing)
   |
   +-- config.py (credential + path + API base URL resolution)
+  |
+  +-- workspace.py (per-workspace cache database resolution)
 
 Testing / Development:
   fake_slack.py (standalone HTTP server, deterministic workspace data)
@@ -28,7 +30,7 @@ Testing / Development:
     +-- WorkspaceParams (seed, user/channel/thread counts)
     +-- Workspace (pre-generated users, channels, threads)
     +-- RateLimiter (sliding-window per-endpoint)
-    +-- FakeSlackHandler (BaseHTTPRequestHandler, 4 API routes)
+    +-- FakeSlackHandler (BaseHTTPRequestHandler, 7 API routes)
 ```
 
 ## Key Components
@@ -37,10 +39,11 @@ Testing / Development:
 |---|---|---|
 | cli.py | CLI entry point, argument parsing, output rendering | cyclopts, structlog |
 | cache.py | Fetch/load orchestration, incremental refresh, channel message fetching | dataclasses, structlog |
-| slack_api.py | Slack Web API client with pagination, rate-limit retry, configurable base URL | requests, structlog |
+| slack_api.py | Slack Web API client with pagination, rate-limit retry, configurable base URL | httpx, structlog |
 | storage.py | SQLite schema management, CRUD operations, logging cursor | sqlite3, structlog |
 | config.py | Credential loading (env vars + config file), path defaults, API base URL | python-dotenv, os |
 | urls.py | Slack permalink parsing into ThreadRef dataclass | urllib.parse, dataclasses |
+| workspace.py | Per-workspace cache database resolution (auth.test identity, last-used pointer, offline fallback) | pathlib, structlog |
 | fake_slack.py | Fake Slack API server for testing/development (includes chat.postMessage) | http.server, random, structlog |
 
 ## Data Flow
@@ -57,7 +60,8 @@ cli.py: parse URL via urls.py -> ThreadRef(channel, thread_ts)
 cli.py: load credentials via config.py -> Credentials(token, cookie)
   |
   v
-cli.py: open SQLite via storage.connect() -> Connection
+cli.py: resolve the workspace database (auth.test, --workspace, or --db)
+  then open it via storage.connect() -> Connection
   |
   v
 cache.py: fetch_thread(conn, client, ref)
@@ -131,6 +135,31 @@ storage.count_channel_messages(channel) -> total
 Print summary to stderr
 ```
 
+### Workspace database resolution
+
+Each workspace caches to its own SQLite file at
+`$XDG_CACHE_HOME/slackx/<workspace>/threads.db`, so channel, user, and
+timestamp keys from different workspaces never collide.
+
+- Network commands resolve the workspace from the configured credentials, so
+  the database always matches them.
+- The workspace name is cached on disk keyed by token and API base URL
+  (`workspace_names.json`), so auth.test runs only once per credential set.
+- The workspace name is the URL subdomain from auth.test (for example `acme`
+  from `https://acme.slack.com/`), falling back to the team id.
+- The most recently used workspace is recorded in a pointer file
+  (`last_workspace`) so read-only commands such as `show --no-fetch` resolve
+  their database offline.
+- `serve` without `--db` or `--workspace` resolves from the credentials too
+  (disk cache, then auth.test), falling back to offline resolution when
+  credentials are missing or Slack cannot be reached.
+- Offline resolution order: last-used workspace, then the only existing
+  workspace database, then the legacy single `threads.db`.
+- `--workspace <name>` selects a workspace explicitly; `--db <path>` overrides
+  the path entirely and skips workspace resolution.
+- With several workspace databases and no last-used pointer, commands fail and
+  ask for an explicit `--workspace`.
+
 ## Infrastructure
 
 No CI/CD configuration was found in the repository. The project uses local
@@ -162,3 +191,13 @@ Key decisions visible in the code:
 - Fake Slack server generates deterministic workspace data from a seeded RNG,
   providing reproducible test environments
 - Fake Slack server supports chat.postMessage for simulating message creation
+- One SQLite database per workspace prevents channel/user id collisions
+  between workspaces
+- Workspace identity is discovered via auth.test (URL subdomain preferred,
+  team id fallback) rather than parsed from permalinks, so every command
+  resolves the same way
+- A last-used workspace pointer keeps read-only commands network-free
+- The token-to-workspace mapping is cached on disk (hashed key, no secrets),
+  making auth.test a once-per-credential-set cost
+- The legacy single threads.db is never migrated into the per-workspace
+  layout; it stays in place and only serves offline fallback reads

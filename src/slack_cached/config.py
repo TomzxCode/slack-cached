@@ -5,8 +5,10 @@ Credentials are resolved in this order:
 2. A config file at $XDG_CONFIG_HOME/slackx/config or ~/.config/slackx/config.
    The config file is a simple KEY=VALUE format, similar to a .env file.
 
-The cache database lives at $XDG_CACHE_HOME/slackx/threads.db
-or ~/.cache/slackx/threads.db by default, and can be overridden via --db.
+The cache database lives at $XDG_CACHE_HOME/slackx/<workspace>/threads.db
+or ~/.cache/slackx/<workspace>/threads.db by default, one database per Slack
+workspace (see workspace.py). It can be overridden via --db, or a workspace
+can be selected explicitly via --workspace.
 """
 
 import os

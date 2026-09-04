@@ -110,6 +110,18 @@ class SlackClient:
         self._conversations_list_url = f"{self._base_url}/conversations.list"
         self._conversations_history_url = f"{self._base_url}/conversations.history"
         self._search_messages_url = f"{self._base_url}/search.messages"
+        self._auth_test_url = f"{self._base_url}/auth.test"
+        self._auth_test_data: dict[str, Any] | None = None
+
+    @property
+    def token(self) -> str:
+        """Bearer token used for requests."""
+        return self._credentials.token
+
+    @property
+    def base_url(self) -> str:
+        """API base URL requests are sent to."""
+        return self._base_url
 
     def _headers(self) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._credentials.token}"}
@@ -163,6 +175,16 @@ class SlackClient:
             return data
 
         raise SlackAPIError(f"Rate limited {MAX_RETRIES} times, giving up on {url}")
+
+    async def auth_test(self) -> dict[str, Any]:
+        """Return the ``auth.test`` identity payload (cached per client).
+
+        Identifies which workspace the configured credentials belong to; used
+        to pick the per-workspace cache database.
+        """
+        if self._auth_test_data is None:
+            self._auth_test_data = await self._get(self._auth_test_url, {})
+        return self._auth_test_data
 
     async def aclose(self) -> None:
         if self._client is not None:

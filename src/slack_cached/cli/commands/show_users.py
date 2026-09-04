@@ -16,6 +16,7 @@ from slack_cached.cli._internal._shared import (
     JsonlArg,
     NoFetchArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     app,
 )
@@ -31,20 +32,27 @@ async def show_users(
     json_output: JsonArg = False,
     jsonl_output: JsonlArg = False,
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     verbose: VerboseArg = False,
 ) -> int:
     """Print cached users to stdout (human-readable by default)."""
-    common = _setup(db, api_base_url, verbose)
+    common = _setup(db, api_base_url, verbose, workspace)
     fmt = _output_format(json_output, jsonl_output)
-    with _client._open_db(common) as conn:
-        if not no_fetch and not load_users(conn):
-            from slack_cached.cache import fetch_users
-
-            log.info("users_not_cached_fetching")
-            async with _client._open_client(common) as client:
-                await fetch_users(conn, client)
+    async with _client._open_db(common) as conn:
         users = load_users(conn)
+
+    if not users and not no_fetch:
+        from slack_cached.cache import fetch_users
+
+        log.info("users_not_cached_fetching")
+        async with (
+            _client._open_client(common) as client,
+            _client._open_db(common, client) as conn,
+        ):
+            if not load_users(conn):
+                await fetch_users(conn, client)
+            users = load_users(conn)
 
     if fmt in ("json", "jsonl"):
         payload = {"user_count": len(users), "users": [asdict(u) for u in users]}

@@ -1343,3 +1343,226 @@ def test_serve_command_is_registered(capsys: pytest.CaptureFixture[str]) -> None
     out = capsys.readouterr().out
     assert "--host" in out
     assert "--port" in out
+
+
+# ---------------------------------------------------------------------------
+# Per-workspace cache database
+# ---------------------------------------------------------------------------
+
+
+def _stub_workspace_client(
+    monkeypatch: pytest.MonkeyPatch,
+    auth_payload: dict,
+    *,
+    token: str = "xoxc-test-token",
+    base_url: str = "https://slack.com/api",
+) -> None:
+    """Stub the Slack client with a fixed auth.test identity."""
+
+    class FakeWorkspaceClient:
+        async def auth_test(self):
+            return auth_payload
+
+        async def iter_thread_replies(
+            self,
+            channel: str,
+            thread_ts: str,
+            oldest: str | None = None,
+            limit: int = 200,
+        ):
+            yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
+
+        async def aclose(self) -> None:
+            pass
+
+    FakeWorkspaceClient.token = token
+    FakeWorkspaceClient.base_url = base_url
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeWorkspaceClient())
+
+
+def test_fetch_targets_workspace_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Without --db, fetch lands in <cache>/<workspace>/threads.db via auth.test."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    _stub_workspace_client(
+        monkeypatch,
+        {"ok": True, "url": "https://acme.slack.com/", "team_id": "TACME"},
+    )
+
+    rc = cli.main(["fetch", "--channel", "C0123ABCDEF", "--ts", "1700000000.000100"])
+
+    assert rc == 0
+    assert (tmp_path / "slackx" / "acme" / "threads.db").exists()
+    assert (tmp_path / "slackx" / "last_workspace").read_text().strip() == "acme"
+
+
+def test_show_reads_last_workspace_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """show --no-fetch finds the last-used workspace database without network."""
+
+    def fail_build(common):
+        raise AssertionError("show --no-fetch must not build a client")
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    _stub_workspace_client(
+        monkeypatch,
+        {"ok": True, "url": "https://acme.slack.com/", "team_id": "TACME"},
+    )
+    rc = cli.main(["fetch", "--channel", "C0123ABCDEF", "--ts", "1700000000.000100"])
+    assert rc == 0
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", fail_build)
+    rc = cli.main(
+        [
+            "show",
+            "--channel",
+            "C0123ABCDEF",
+            "--ts",
+            "1700000000.000100",
+            "--no-fetch",
+        ]
+    )
+    assert rc == 0
+    assert "hello" in capsys.readouterr().out
+
+
+def test_workspace_flag_selects_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """--workspace names the cache directory without an auth.test call."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    class FakeWorkspaceClient:
+        async def auth_test(self):
+            raise AssertionError("auth.test must not run when --workspace is given")
+
+        async def iter_thread_replies(
+            self,
+            channel: str,
+            thread_ts: str,
+            oldest: str | None = None,
+            limit: int = 200,
+        ):
+            yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: FakeWorkspaceClient())
+
+    rc = cli.main(
+        [
+            "fetch",
+            "--channel",
+            "C0123ABCDEF",
+            "--ts",
+            "1700000000.000100",
+            "--workspace",
+            "beta",
+        ]
+    )
+
+    assert rc == 0
+    assert (tmp_path / "slackx" / "beta" / "threads.db").exists()
+    assert (tmp_path / "slackx" / "last_workspace").read_text().strip() == "beta"
+
+
+def test_show_requires_workspace_when_ambiguous(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Multiple workspace caches without a last-used pointer is an error."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    from slack_cached.storage import connect
+    from slack_cached.workspace import workspace_db_path
+
+    connect(workspace_db_path("alpha")).close()
+    connect(workspace_db_path("beta")).close()
+
+    with pytest.raises(SystemExit, match="alpha, beta"):
+        cli.main(
+            [
+                "show",
+                "--channel",
+                "C0123ABCDEF",
+                "--ts",
+                "1700000000.000100",
+                "--no-fetch",
+            ]
+        )
+
+
+def test_auth_test_runs_once_per_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The first fetch resolves via auth.test; later fetches reuse the disk cache."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    auth_calls: list[int] = []
+    payload = {"ok": True, "url": "https://acme.slack.com/", "team_id": "TACME"}
+
+    class CountingClient:
+        token = "xoxc-test-token"
+        base_url = "https://slack.com/api"
+
+        async def auth_test(self):
+            auth_calls.append(1)
+            return payload
+
+        async def iter_thread_replies(self, channel, thread_ts, oldest=None, limit=200):
+            yield {"ts": "1700000000.000100", "user": "U1", "text": "hello"}
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", lambda _: CountingClient())
+
+    for _ in range(2):
+        rc = cli.main(["fetch", "--channel", "C0123ABCDEF", "--ts", "1700000000.000100"])
+        assert rc == 0
+
+    assert len(auth_calls) == 1
+    names = json.loads((tmp_path / "slackx" / "workspace_names.json").read_text())
+    assert len(names) == 1
+    assert "acme" in names.values()
+
+
+def test_serve_sync_resolution_uses_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without --db/--workspace, serve resolves the workspace from credentials."""
+    from slack_cached.cli._internal import _client
+    from slack_cached.cli._internal._shared import CommonArgs
+    from slack_cached.workspace import workspace_db_path
+
+    common = CommonArgs()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("SLACK_TOKEN", "xoxc-test-token")
+    monkeypatch.setenv("SLACK_COOKIE", "xoxd-test-cookie")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    # Cache miss: auth.test runs via the (stubbed) client, then is stored.
+    _stub_workspace_client(
+        monkeypatch,
+        {"ok": True, "url": "https://acme.slack.com/", "team_id": "TACME"},
+    )
+    assert _client._resolve_db_path_sync(common) == workspace_db_path("acme")
+
+    # Cache hit: no client is built and no network call is made.
+    def fail_build(common):
+        raise AssertionError("cached workspace must not build a client")
+
+    monkeypatch.setattr(cli._internal._client, "_build_client", fail_build)
+    assert _client._resolve_db_path_sync(common) == workspace_db_path("acme")
+
+
+def test_serve_sync_resolution_without_credentials_falls_back_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No credentials: serve falls back to offline resolution."""
+    from slack_cached.cli._internal import _client
+    from slack_cached.cli._internal._shared import CommonArgs
+    from slack_cached.workspace import offline_db_path
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.delenv("SLACK_TOKEN", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    common = CommonArgs()
+    assert _client._resolve_db_path_sync(common) == offline_db_path()

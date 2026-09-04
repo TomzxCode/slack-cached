@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import structlog
 
+from slack_cached.fake_slack._internal._constants import TEAM_ID
 from slack_cached.fake_slack._internal._rate_limiter import RateLimiter
 from slack_cached.fake_slack._internal._workspace import Workspace
 
@@ -33,6 +34,7 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
                 return
 
         routes = {
+            "/api/auth.test": self._handle_auth_test,
             "/api/conversations.replies": self._handle_conversations_replies,
             "/api/conversations.history": self._handle_conversations_history,
             "/api/users.list": self._handle_users_list,
@@ -82,6 +84,20 @@ class FakeSlackHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "unknown_endpoint"}, 404)
             return
         handler(params)
+
+    def _handle_auth_test(self, params: dict[str, str]) -> None:
+        users = self.workspace.users
+        user_id = users[0]["id"] if users else "U0FAKEUSER"
+        self._send_json(
+            {
+                "ok": True,
+                "team_id": TEAM_ID,
+                "team": "Fake Workspace",
+                "user": user_id,
+                "user_id": user_id,
+                "url": "https://fake.slack.com/",
+            }
+        )
 
     def _handle_conversations_replies(self, params: dict[str, str]) -> None:
         channel = params.get("channel", "")

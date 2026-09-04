@@ -16,6 +16,7 @@ from slack_cached.cli._internal._shared import (
     JsonlArg,
     NoFetchArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     app,
 )
@@ -31,20 +32,27 @@ async def show_channels(
     json_output: JsonArg = False,
     jsonl_output: JsonlArg = False,
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     verbose: VerboseArg = False,
 ) -> int:
     """Print cached channels to stdout (human-readable by default)."""
-    common = _setup(db, api_base_url, verbose)
+    common = _setup(db, api_base_url, verbose, workspace)
     fmt = _output_format(json_output, jsonl_output)
-    with _client._open_db(common) as conn:
-        if not no_fetch and not load_channels(conn):
-            from slack_cached.cache import fetch_channels
-
-            log.info("channels_not_cached_fetching")
-            async with _client._open_client(common) as client:
-                await fetch_channels(conn, client)
+    async with _client._open_db(common) as conn:
         channels = load_channels(conn)
+
+    if not channels and not no_fetch:
+        from slack_cached.cache import fetch_channels
+
+        log.info("channels_not_cached_fetching")
+        async with (
+            _client._open_client(common) as client,
+            _client._open_db(common, client) as conn,
+        ):
+            if not load_channels(conn):
+                await fetch_channels(conn, client)
+            channels = load_channels(conn)
 
     if fmt in ("json", "jsonl"):
         payload = {"channel_count": len(channels), "channels": [asdict(c) for c in channels]}

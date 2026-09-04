@@ -13,6 +13,7 @@ from slack_cached.cli._internal._shared import (
     ApiBaseUrlArg,
     DbArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     app,
 )
@@ -54,11 +55,12 @@ async def poll(
         bool, Parameter(name="--json", help="Emit per-cycle JSON summaries to stdout.")
     ] = False,
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     verbose: VerboseArg = False,
 ) -> int:
     """Poll channels concurrently in a loop for new messages."""
-    common = _setup(db, api_base_url, verbose)
+    common = _setup(db, api_base_url, verbose, workspace)
 
     resolved = await _resolve_poll_channels(common, channels)
     if not resolved:

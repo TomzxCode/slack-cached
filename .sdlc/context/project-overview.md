@@ -11,7 +11,9 @@ every message. On subsequent runs it only fetches new replies by passing `oldest
 to the API, making incremental refreshes efficient. It also supports fetching
 entire channel message histories via conversations.history, with optional full
 thread reply expansion. A fake Slack server is included for integration testing
-and development without hitting the real Slack API.
+and development without hitting the real Slack API. Each Slack workspace gets
+its own cache database, so several workspaces can be cached without id
+collisions.
 
 ## Key Stakeholders
 
@@ -33,16 +35,17 @@ in pyproject.toml is Tom Rochette.
 - Human-readable and JSON output of cached threads, users, and channels
 - Resolution of user ids to display names in thread output
 - Credential management via environment variables and config file
+- Per-workspace cache databases with the workspace discovered automatically via auth.test
+- Local full-text search over cached messages, plus live search via search.messages
 - Configurable API base URL for testing against a fake server
 - Fake Slack API server with deterministic workspace data generation for testing
 
 **Out of scope:**
 - Writing or sending messages to Slack
 - Real-time event streaming (Socket Mode, Events API)
-- Multi-workspace or multi-token management
+- Simultaneous multi-token management (one set of credentials is configured at a time; each workspace keeps its own cache database)
 - Web UI or API server (production)
 - Caching of files, attachments, or reactions
-- Message search or full-text indexing
 
 ## Key Constraints
 

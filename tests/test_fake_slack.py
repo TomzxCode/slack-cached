@@ -96,6 +96,25 @@ class TestWorkspaceGeneration:
 
 
 # ---------------------------------------------------------------------------
+# Auth test endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestAuthTest:
+    def test_returns_workspace_identity(self, fake_server: str) -> None:
+        data = _get(fake_server, "/api/auth.test")
+        assert data["ok"] is True
+        assert data["team_id"] == "T01FAKEWK"
+        assert data["url"] == "https://fake.slack.com/"
+        assert data["user"].startswith("U")
+
+    def test_user_matches_generated_workspace(self, fake_server: str) -> None:
+        data = _get(fake_server, "/api/auth.test")
+        users = _get(fake_server, "/api/users.list")
+        assert data["user"] == users["members"][0]["id"]
+
+
+# ---------------------------------------------------------------------------
 # Users list endpoint
 # ---------------------------------------------------------------------------
 

@@ -39,7 +39,13 @@ and discussions. Add new terms as they are introduced.
 | conversations.replies | Slack API endpoint that returns all replies in a thread |
 | conversations.list | Slack API endpoint that returns all visible conversations/channels |
 | users.list | Slack API endpoint that returns all workspace members |
+| auth.test | Slack API endpoint that returns the caller's identity: team id, team name, user id, and workspace URL |
 | chat.postMessage | Slack API endpoint that sends a message to a channel or thread |
+| search.messages | Slack API endpoint that searches messages matching a query |
+| workspace name | Identifier for a workspace's cache directory: the URL subdomain from auth.test (e.g. `acme` from `acme.slack.com`), falling back to the team id |
+| workspace database | The per-workspace SQLite cache at `~/.cache/slackx/<workspace>/threads.db` |
+| last-workspace pointer | File at `~/.cache/slackx/last_workspace` recording the most recently used workspace so read-only commands can resolve their database offline |
+| workspace name cache | File at `~/.cache/slackx/workspace_names.json` mapping hashed credentials (token plus API base URL) to workspace names, avoiding repeated auth.test calls |
 | cursor | Opaque pagination token returned by Slack APIs for fetching the next page of results |
 | XDG base directory | freedesktop.org specification for config, cache, and data file locations |
 

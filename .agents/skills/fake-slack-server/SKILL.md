@@ -64,6 +64,7 @@ real Slack Web API (cursor-based pagination, `limit`, etc.).
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /api/auth.test` | Identity of the generated workspace: `team_id` (`T01FAKEWK`), team name, user id, and `url` (`https://fake.slack.com/`). |
 | `GET /api/users.list` | Paginated list of workspace members. |
 | `GET /api/conversations.list` | Paginated list of channels. Supports `types` filter (e.g. `public_channel,private_channel`). |
 | `GET /api/conversations.history` | Top-level messages (thread roots) in a channel. Requires `channel`. Supports `oldest`, `latest`, cursor pagination. Each message includes `reply_count` and `latest_reply` metadata. |

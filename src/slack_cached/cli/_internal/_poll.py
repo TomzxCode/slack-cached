@@ -54,6 +54,7 @@ async def _poll_loop(
             client=httpx_client,
             rate_limit_state=rate_limit_state,
         )
+        db_path = await _client._resolve_db_path(common, client)
         semaphore = asyncio.Semaphore(concurrency)
         cycle = 0
 
@@ -71,7 +72,7 @@ async def _poll_loop(
                 ) -> dict[str, Any]:
                     async with semaphore:
                         try:
-                            with _client._open_db(common) as conn:
+                            with _client._open_db_at(db_path) as conn:
                                 result = await fetch_channel_messages(
                                     conn,
                                     client,

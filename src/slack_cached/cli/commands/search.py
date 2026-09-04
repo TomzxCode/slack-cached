@@ -16,6 +16,7 @@ from slack_cached.cli._internal._shared import (
     JsonArg,
     JsonlArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     _timed,
     app,
@@ -43,6 +44,7 @@ async def search(
         Parameter(help="Also fetch all replies for every thread a match belongs to."),
     ] = False,
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     json_output: JsonArg = False,
     jsonl_output: JsonlArg = False,
@@ -57,31 +59,30 @@ async def search(
     """
     from slack_cached.cache import fetch_search
 
-    common = _setup(db, api_base_url, verbose)
+    common = _setup(db, api_base_url, verbose, workspace)
     fmt = _output_format(json_output, jsonl_output)
 
     log.debug("cmd_search_start", query=query)
-    async with _client._open_client(common) as client:
-        with _client._open_db(common) as conn:
-            with _timed("fetch_search", query=query):
-                result = await fetch_search(
-                    conn,
-                    client,
-                    query=query,
-                    count=count,
-                    sort=sort,
-                    sort_dir=sort_dir,
-                    full_threads=full_threads,
-                )
-            matches = result.matches
-            log.debug("search_matches", count=len(matches))
+    async with _client._open_client(common) as client, _client._open_db(common, client) as conn:
+        with _timed("fetch_search", query=query):
+            result = await fetch_search(
+                conn,
+                client,
+                query=query,
+                count=count,
+                sort=sort,
+                sort_dir=sort_dir,
+                full_threads=full_threads,
+            )
+        matches = result.matches
+        log.debug("search_matches", count=len(matches))
 
-            user_ids = {m.get("user") for m in matches if m.get("user")}
-            channel_ids = {m.get("channel") for m in matches if m.get("channel")}
-            with _timed("build_user_names"):
-                user_names = load_user_display_names(conn, user_ids)
-            with _timed("build_channel_names"):
-                channel_names = _channel_id_names(conn, channel_ids)
+        user_ids = {m.get("user") for m in matches if m.get("user")}
+        channel_ids = {m.get("channel") for m in matches if m.get("channel")}
+        with _timed("build_user_names"):
+            user_names = load_user_display_names(conn, user_ids)
+        with _timed("build_channel_names"):
+            channel_names = _channel_id_names(conn, channel_ids)
 
     with _timed("render", format=fmt, matches=len(matches)):
         if fmt in ("json", "jsonl"):

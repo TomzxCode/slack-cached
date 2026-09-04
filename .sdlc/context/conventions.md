@@ -24,6 +24,7 @@ slack-cached/
       slack_api.py         # Slack Web API HTTP client
       storage.py           # SQLite schema and data access
       urls.py              # URL parsing utilities
+      workspace.py         # Per-workspace cache database resolution
   tests/
     test_cache.py          # Tests for cache orchestration
     test_cli.py            # Tests for CLI surface
@@ -32,6 +33,7 @@ slack-cached/
     test_slack_api.py      # Tests for Slack API client
     test_storage.py        # Tests for SQLite storage
     test_urls.py           # Tests for URL parsing
+    test_workspace.py      # Tests for per-workspace database resolution
   pyproject.toml           # Project metadata, deps, tool config
   README.md                # User-facing documentation
 ```

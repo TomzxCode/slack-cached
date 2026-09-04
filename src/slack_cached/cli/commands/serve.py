@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 import structlog
 from cyclopts import Parameter
 
+from slack_cached.cli._internal import _client
 from slack_cached.cli._internal._shared import (
     ApiBaseUrlArg,
     DbArg,
     VerboseArg,
+    WorkspaceArg,
     _setup,
     app,
 )
-from slack_cached.config import default_db_path
 
 log = structlog.get_logger(__name__)
 
@@ -35,6 +35,7 @@ def serve(
     host: HostArg = "127.0.0.1",
     port: PortArg = 8280,
     db: DbArg = None,
+    workspace: WorkspaceArg = None,
     api_base_url: ApiBaseUrlArg = None,
     verbose: VerboseArg = False,
 ) -> int:
@@ -43,10 +44,12 @@ def serve(
     Opens a Slack-like interface to browse cached users, channels, messages
     and threads. Ctrl+P opens a palette to jump between channels and
     conversations. Refresh buttons trigger live Slack fetches when
-    credentials are configured.
+    credentials are configured. Without --db or --workspace, the workspace
+    is determined from the configured token/cookie (cached on disk after the
+    first auth.test), falling back to the last-used workspace offline.
     """
-    common = _setup(db, api_base_url, verbose)
-    db_path = Path(common.db) if common.db else default_db_path()
+    common = _setup(db, api_base_url, verbose, workspace)
+    db_path = _client._resolve_db_path_sync(common)
 
     import uvicorn
 

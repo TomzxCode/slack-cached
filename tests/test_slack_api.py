@@ -238,3 +238,25 @@ def test_iter_search_messages_no_matches_returns_empty() -> None:
 
     assert msgs == []
     assert len(transport.calls) == 1
+
+
+def test_auth_test_returns_payload_and_caches() -> None:
+    transport = FakeTransport(
+        [
+            {
+                "ok": True,
+                "team_id": "T123",
+                "team": "Acme",
+                "user": "U1",
+                "url": "https://acme.slack.com/",
+            },
+        ]
+    )
+    client = _client(transport)
+
+    first = asyncio.run(client.auth_test())
+    second = asyncio.run(client.auth_test())
+
+    assert first["url"] == "https://acme.slack.com/"
+    assert second == first
+    assert transport.calls == [{"url": "/api/auth.test", "params": {}}]
