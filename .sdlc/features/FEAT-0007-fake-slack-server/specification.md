@@ -51,6 +51,7 @@ fake_slack.py
 | seed | int | 42 | Random seed for deterministic generation |
 | num_users | int | 20 | Number of workspace members |
 | num_channels | int | 13 | Number of channels |
+| num_ims | int | 4 | Number of direct message conversations (no name, peer in user) |
 | num_threads | int | 30 | Number of conversation threads |
 | min_messages_per_thread | int | 3 | Minimum messages per thread |
 | max_messages_per_thread | int | 12 | Maximum messages per thread |
@@ -100,9 +101,9 @@ The server exposes Slack-compatible JSON responses:
 python -m slack_cached.fake_slack --port 8199 --seed 42
   -> Parse CLI args -> WorkspaceParams
   -> Generate Workspace(seed=42, ...)
-     -> _generate_users() -> 20 realistic user dicts
-     -> _generate_channels() -> 13 channel dicts
-     -> _generate_threads() -> 30 thread dicts with template-based messages
+      -> _generate_users() -> 20 realistic user dicts
+      -> _generate_channels() -> 13 channel dicts + 4 direct message dicts
+      -> _generate_threads() -> 30 thread dicts with template-based messages
   -> Create FakeSlackHandler with Workspace and optional RateLimiter
   -> HTTPServer.serve_forever()
 ```

@@ -671,6 +671,72 @@ def load_channels(conn: sqlite3.Connection) -> list[CachedChannel]:
     return [_row_to_channel(row) for row in rows]
 
 
+def load_channel_display_names(
+    conn: sqlite3.Connection, channel_ids: Iterable[str]
+) -> dict[str, str]:
+    """Return a {channel_id: display_name} map for the requested channels.
+
+    Regular channels resolve to their stored name. Direct message channels
+    (nameless conversations whose payload marks ``is_im``) resolve to the
+    display name of the peer user stored on the conversation, so a DM shows
+    up as the other person instead of its raw ``D...`` id. Channels that
+    cannot be resolved (absent from the cache, or an IM whose peer user is
+    unknown) are omitted, leaving callers to fall back to the channel id.
+    """
+    ids = list(dict.fromkeys(cid for cid in channel_ids if cid))
+    if not ids:
+        return {}
+    names: dict[str, str] = {}
+    im_peers: list[tuple[str, str]] = []
+    # Chunk to stay well under SQLite's bound-variable limit (default 999).
+    for start in range(0, len(ids), 900):
+        chunk = ids[start : start + 900]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT id, name, payload FROM channels WHERE id IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        for row in rows:
+            if row["name"]:
+                names[row["id"]] = row["name"]
+                continue
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            peer_id = payload.get("user")
+            if payload.get("is_im") and peer_id:
+                im_peers.append((row["id"], peer_id))
+    if im_peers:
+        peer_names = load_user_display_names(conn, [peer for _, peer in im_peers])
+        for channel_id, peer_id in im_peers:
+            if peer_id in peer_names:
+                names[channel_id] = peer_names[peer_id]
+    return names
+
+
+def load_im_channel_ids(conn: sqlite3.Connection, channel_ids: Iterable[str]) -> set[str]:
+    """Return the subset of channel_ids that are direct message conversations.
+
+    A channel is a DM when its cached payload marks ``is_im``; the id prefix
+    is not trusted because Slack uses ``D`` ids only for one-to-one messages.
+    """
+    ids = list(dict.fromkeys(cid for cid in channel_ids if cid))
+    if not ids:
+        return set()
+    im_ids: set[str] = set()
+    # Chunk to stay well under SQLite's bound-variable limit (default 999).
+    for start in range(0, len(ids), 900):
+        chunk = ids[start : start + 900]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT id, payload FROM channels WHERE id IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            if payload.get("is_im"):
+                im_ids.add(row["id"])
+    return im_ids
+
+
 def count_users(conn: sqlite3.Connection) -> int:
     """Return the number of cached users."""
     row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()

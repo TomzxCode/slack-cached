@@ -14,7 +14,9 @@ from slack_cached.storage import (
     get_channel,
     get_thread_state,
     get_user,
+    load_channel_display_names,
     load_channels,
+    load_im_channel_ids,
     load_thread_messages,
     load_user_display_names,
     load_users,
@@ -289,6 +291,63 @@ def test_upsert_channels_replaces_existing(tmp_path: Path) -> None:
     assert channel.is_private is True
     assert channel.fetched_at == 2.0
     assert count_channels(conn) == 1
+
+
+def test_load_channel_display_names_resolves_im_peer(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    upsert_users(
+        conn,
+        [
+            {"id": "U1", "name": "tomzx", "real_name": "Tom Rochette"},
+            {"id": "U2", "name": "alice", "real_name": "Alice Smith"},
+        ],
+    )
+    upsert_channels(
+        conn,
+        [
+            # Like real Slack, IM conversations carry no name, only the peer.
+            {"id": "D1", "is_im": True, "user": "U1"},
+            {"id": "D2", "is_im": True, "user": "U2"},
+            {"id": "C1", "name": "general", "is_im": False},
+            # IM pointing at a user missing from the cache.
+            {"id": "D3", "is_im": True, "user": "U404"},
+        ],
+    )
+    conn.commit()
+
+    names = load_channel_display_names(conn, ["D1", "D2", "C1", "D3", "D999"])
+    assert names == {
+        "D1": "Tom Rochette (tomzx)",
+        "D2": "Alice Smith (alice)",
+        "C1": "general",
+        # An IM whose peer is unknown resolves to nothing, like a channel
+        # missing from the cache, so callers fall back to the raw id.
+    }
+
+
+def test_load_channel_display_names_empty_input(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    assert load_channel_display_names(conn, []) == {}
+
+
+def test_load_im_channel_ids(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    upsert_channels(
+        conn,
+        [
+            {"id": "D1", "is_im": True, "user": "U1"},
+            {"id": "C1", "name": "general"},
+            {"id": "C2", "name": "ims-false", "is_im": False},
+        ],
+    )
+    conn.commit()
+
+    assert load_im_channel_ids(conn, ["D1", "C1", "C2", "D404"]) == {"D1"}
+
+
+def test_load_im_channel_ids_empty_input(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "cache.db")
+    assert load_im_channel_ids(conn, []) == set()
 
 
 def test_upsert_empty_lists_return_zero(tmp_path: Path) -> None:

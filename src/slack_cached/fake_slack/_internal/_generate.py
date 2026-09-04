@@ -90,7 +90,11 @@ def _generate_users(rng: random.Random, params: WorkspaceParams) -> list[dict[st
     return users
 
 
-def _generate_channels(rng: random.Random, params: WorkspaceParams) -> list[dict[str, Any]]:
+def _generate_channels(
+    rng: random.Random,
+    params: WorkspaceParams,
+    users: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     # Use the first params.num_channels from the pool, then cycle if needed
     channels: list[dict[str, Any]] = []
     for i in range(params.num_channels):
@@ -133,6 +137,43 @@ def _generate_channels(rng: random.Random, params: WorkspaceParams) -> list[dict
             "num_members": rng.randint(3, 50),
         }
         channels.append(channel)
+
+    channels.extend(_generate_ims(rng, params, users))
+    return channels
+
+
+def _generate_ims(
+    rng: random.Random,
+    params: WorkspaceParams,
+    users: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Generate direct message conversations, one per peer user.
+
+    Mirrors the shape of real Slack ``conversations.list`` IM objects: no
+    ``name`` (the display name is the peer user) and no ``is_private``. The
+    first generated user stands in for the authenticated account, so peers
+    are drawn from the remaining users.
+    """
+    peers = [u for u in (users or []) if not u.get("is_bot")][1:]
+    channels: list[dict[str, Any]] = []
+    for i in range(min(params.num_ims, len(peers))):
+        peer = peers[i]
+        channels.append(
+            {
+                "id": f"D{i + 1:04d}",
+                "created": int(params.epoch_base),
+                "is_archived": False,
+                "is_im": True,
+                "is_org_shared": False,
+                "context_team_id": TEAM_ID,
+                "updated": params.epoch_base + rng.randint(0, 86400 * 60),
+                "user": peer["id"],
+                "is_user_deleted": False,
+                "priority": 0,
+                "last_read": f"{params.epoch_base + rng.randint(0, 86400 * 7):.6f}",
+                "latest": {"ts": f"{params.epoch_base + rng.randint(0, 86400):.6f}"},
+            }
+        )
     return channels
 
 
@@ -159,10 +200,10 @@ def _generate_threads(
     if not user_ids:
         user_ids = [u["id"] for u in users]
 
-    channel_lookup = {c["name"]: c["id"] for c in channels}
+    channel_lookup = {c["name"]: c["id"] for c in channels if c.get("name")}
 
     # Determine which channel names are available
-    available_channel_names = [c["name"] for c in channels]
+    available_channel_names = [c["name"] for c in channels if c.get("name")]
     # Map template channel names to available channels (try exact match first)
     # Build routes from engineering/design/etc to actual channel IDs
 
@@ -171,6 +212,11 @@ def _generate_threads(
         if channel_name in channel_lookup:
             return channel_lookup[channel_name]
         return None
+
+    # Direct message channels host two-person conversations between the
+    # authenticated user (the first generated user) and the IM's peer.
+    im_channels = [c for c in channels if c.get("is_im")]
+    auth_user_id = users[0]["id"] if users else None
 
     # Collect all templates keyed by available channel names
     channel_templates: dict[str, list[list[tuple[int, str]]]] = {}
@@ -329,12 +375,22 @@ def _generate_threads(
     # Generate threads
     thread_count = 0
     while thread_count < params.num_threads:
-        # Pick a channel
-        ch_name = rng.choice(available_channel_names)
-        ch_id = channel_lookup.get(ch_name, channels[0]["id"])
+        # Pick a channel; roughly one thread in five lands in a direct message
+        if im_channels and rng.random() < 0.2:
+            im = rng.choice(im_channels)
+            im_channel = im
+            ch_id = im["id"]
+            ch_name = None
+        else:
+            im_channel = None
+            ch_name = rng.choice(available_channel_names)
+            ch_id = channel_lookup.get(ch_name, channels[0]["id"])
 
         # Pick a pattern
-        patterns = channel_templates.get(ch_name, fallback_templates)
+        if im_channel is not None:
+            patterns = fallback_templates
+        else:
+            patterns = channel_templates.get(ch_name, fallback_templates)
         if not patterns:
             continue
         pattern: list[tuple[int, str]] = rng.choice(patterns)
@@ -344,13 +400,18 @@ def _generate_threads(
         # Truncate pattern to msg_count (but at least 1)
         effective_pattern = pattern[: max(1, msg_count)]
 
-        # Pick originator and participants
-        originator = rng.choice(primary_users)
-        other_primary = [u for u in primary_users if u != originator]
-        if len(other_primary) < 3:
-            other_primary = [u for u in user_ids if u != originator]
-        rng.shuffle(other_primary)
-        participants = [originator] + other_primary[:4]
+        # Pick originator and participants; direct messages hold exactly the
+        # authenticated user and the IM peer.
+        if im_channel is not None:
+            peer_id = im_channel["user"]
+            participants = [auth_user_id, peer_id]
+        else:
+            originator = rng.choice(primary_users)
+            other_primary = [u for u in primary_users if u != originator]
+            if len(other_primary) < 3:
+                other_primary = [u for u in user_ids if u != originator]
+            rng.shuffle(other_primary)
+            participants = [originator] + other_primary[:4]
 
         # Build context for placeholder filling
         context: dict[str, str] = {}

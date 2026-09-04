@@ -219,10 +219,17 @@ def _render_users_human(users: list[CachedUser]) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def _render_channels_human(channels: list[CachedChannel]) -> str:
+def _render_channels_human(
+    channels: list[CachedChannel],
+    display_names: dict[str, str] | None = None,
+) -> str:
+    names = display_names or {}
     lines = [f"{len(channels)} channel(s)", ""]
     for channel in channels:
-        name = channel.name or "(no name)"
-        visibility = "private" if channel.is_private else "public"
+        name = names.get(channel.id) or channel.name or "(no name)"
+        if channel.payload.get("is_im"):
+            visibility = "direct"
+        else:
+            visibility = "private" if channel.is_private else "public"
         lines.append(f"{channel.id}  {name} ({visibility})")
     return "\n".join(lines).rstrip("\n") + "\n"

@@ -40,6 +40,8 @@ def _populate(db: Path) -> None:
             [
                 {"id": "C1", "name": "general", "is_private": False},
                 {"id": "C2", "name": "secret", "is_private": True},
+                # A direct message channel: no name, only the peer user.
+                {"id": "D1", "is_im": True, "user": "U1"},
             ],
         )
         # Standalone root message.
@@ -61,6 +63,14 @@ def _populate(db: Path) -> None:
                 {"ts": "1700000100.000003", "user": "U2", "text": "a reply"},
             ],
         )
+        # A direct message conversation.
+        storage.record_thread_refresh(conn, "D1", "1700000200.000004", None)
+        storage.upsert_messages(
+            conn,
+            "D1",
+            "1700000200.000004",
+            [{"ts": "1700000200.000004", "user": "U1", "text": "ping from the dm"}],
+        )
         conn.commit()
     finally:
         conn.close()
@@ -77,9 +87,9 @@ def client(db_path: Path) -> TestClient:
 def test_summary(client: TestClient) -> None:
     body = client.get("/api/summary").json()
     assert body["users"] == 2
-    assert body["channels"] == 2
-    assert body["messages"] == 3
-    assert body["threads"] == 2
+    assert body["channels"] == 3
+    assert body["messages"] == 4
+    assert body["threads"] == 3
     assert body["db_path"].endswith(".db")
 
 
@@ -100,13 +110,18 @@ def test_list_users_avatar_picks_largest_image(client: TestClient) -> None:
 
 def test_list_channels_with_counts(client: TestClient) -> None:
     body = client.get("/api/channels").json()
-    assert body["channel_count"] == 2
+    assert body["channel_count"] == 3
     by_id = {c["id"]: c for c in body["channels"]}
     assert by_id["C1"]["message_count"] == 3
     assert by_id["C1"]["thread_count"] == 2
     assert by_id["C2"]["message_count"] == 0
-    # Channels without messages still appear, sorted by name.
-    assert [c["name"] for c in body["channels"]] == ["general", "secret"]
+    assert by_id["D1"]["message_count"] == 1
+    # Direct channels expose their peer's name for display and stay flagged.
+    assert by_id["D1"]["name"] is None
+    assert by_id["D1"]["display_name"] == "Alice Smith (alice)"
+    assert by_id["D1"]["is_im"] is True
+    assert by_id["C1"]["display_name"] == "general"
+    assert by_id["C1"]["is_im"] is False
 
 
 def test_channel_messages_newest_first_with_reply_counts(client: TestClient) -> None:
@@ -117,6 +132,14 @@ def test_channel_messages_newest_first_with_reply_counts(client: TestClient) -> 
     assert body["messages"][0]["latest_reply_ts"] == "1700000100.000003"
     assert body["messages"][0]["user_name"] == "Alice Smith (alice)"
     assert body["has_more"] is False
+
+
+def test_direct_channel_messages_expose_peer_name(client: TestClient) -> None:
+    body = client.get("/api/channels/D1/messages").json()
+    assert body["channel"]["name"] is None
+    assert body["channel"]["display_name"] == "Alice Smith (alice)"
+    assert body["channel"]["is_im"] is True
+    assert [m["text"] for m in body["messages"]] == ["ping from the dm"]
 
 
 def test_channel_messages_pagination(client: TestClient) -> None:
@@ -152,8 +175,18 @@ def test_search_fts(client: TestClient) -> None:
     hit = body["hits"][0]
     assert hit["ts"] == "1700000100.000002"
     assert hit["channel_name"] == "general"
+    assert hit["channel_is_im"] is False
     assert hit["user_name"] == "Alice Smith (alice)"
     assert "deploys" in (hit["snippet"] or hit["text"]).lower()
+
+
+def test_search_direct_channel_hit_resolves_peer_name(client: TestClient) -> None:
+    body = client.get("/api/search", params={"q": "ping"}).json()
+    assert len(body["hits"]) == 1
+    hit = body["hits"][0]
+    assert hit["channel"] == "D1"
+    assert hit["channel_name"] == "Alice Smith (alice)"
+    assert hit["channel_is_im"] is True
 
 
 def test_search_hostile_query_is_safe(client: TestClient) -> None:

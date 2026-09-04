@@ -12,6 +12,7 @@ class WorkspaceParams:
     seed: int = 42
     num_users: int = 20
     num_channels: int = 13
+    num_ims: int = 4
     num_threads: int = 30
     min_messages_per_thread: int = 3
     max_messages_per_thread: int = 12

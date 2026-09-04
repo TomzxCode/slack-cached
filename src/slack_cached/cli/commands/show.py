@@ -34,8 +34,8 @@ from slack_cached.cli._internal._shared import (
     app,
 )
 from slack_cached.storage import (
-    get_channel,
     get_thread_state,
+    load_channel_display_names,
     load_channel_messages,
     load_thread_messages,
 )
@@ -141,8 +141,7 @@ def _load_thread_view(conn, ref) -> tuple[list, dict[str, str], str | None]:
     """Load a thread's messages plus resolved user/channel names from ``conn``."""
     messages = load_thread_messages(conn, ref.channel, ref.thread_ts)
     user_names = _build_user_names(conn, messages)
-    cached_ch = get_channel(conn, ref.channel)
-    channel_name = cached_ch.name if cached_ch else None
+    channel_name = load_channel_display_names(conn, [ref.channel]).get(ref.channel)
     return messages, user_names, channel_name
 
 
@@ -157,8 +156,7 @@ async def _show_channel(
     async with _client._open_db(common) as conn:
         messages = load_channel_messages(conn, channel)
         user_names = _build_user_names(conn, messages)
-        cached_ch = get_channel(conn, channel)
-        channel_name = cached_ch.name if cached_ch else None
+        channel_name = load_channel_display_names(conn, [channel]).get(channel)
 
     if not messages and not no_fetch:
         from slack_cached.cache import fetch_channel_messages
@@ -177,8 +175,7 @@ async def _show_channel(
                 await fetch_channel_messages(conn, client, channel, oldest=oldest)
             messages = load_channel_messages(conn, channel)
             user_names = _build_user_names(conn, messages)
-            cached_ch = get_channel(conn, channel)
-            channel_name = cached_ch.name if cached_ch else None
+            channel_name = load_channel_display_names(conn, [channel]).get(channel)
 
     with _timed("render", format=fmt, messages=len(messages)):
         if fmt in ("json", "jsonl"):
