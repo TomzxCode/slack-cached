@@ -122,6 +122,25 @@ nearly exhausted.
 
 Stops gracefully on `Ctrl+C`.
 
+### serve
+
+Serve the cached database through a local web UI.
+
+```bash
+slack-cached serve [--host HOST] [--port PORT]
+```
+
+| Argument | Description |
+|---|---|
+| `--host HOST` | Interface to bind to (default: `127.0.0.1`) |
+| `--port PORT` | Port to bind to (default: `8280`) |
+
+Opens a Slack-like interface to browse cached users, channels, messages and
+threads, with a `Ctrl+P` palette for searching conversations and jumping to
+them. Refresh buttons trigger live Slack fetches when credentials are
+configured; browsing the cache itself needs none. See
+[Serving the web UI](serving.md).
+
 ## Duration format
 
 The `--last` flag accepts duration strings:

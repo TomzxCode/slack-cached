@@ -3,6 +3,7 @@
 Subcommands:
 - fetch: cache or refresh a Slack thread silently.
 - show: print a cached thread to stdout (human-readable by default, --json for JSON).
+- serve: browse the cache through a local web UI.
 """
 
 from collections.abc import Sequence
@@ -16,6 +17,7 @@ from slack_cached.cli.commands import (  # noqa: F401
     fetch_users,
     poll,
     search,
+    serve,
     show,
     show_channels,
     show_users,

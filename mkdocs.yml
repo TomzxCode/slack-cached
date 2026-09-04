@@ -47,6 +47,7 @@ nav:
     - Searching messages: user-guide/searching.md
     - Caching users: user-guide/caching-users.md
     - Caching channels: user-guide/caching-channels.md
+    - Serving the web UI: user-guide/serving.md
     - Configuration: user-guide/configuration.md
     - CLI reference: user-guide/cli-reference.md
   - Developer Guide:

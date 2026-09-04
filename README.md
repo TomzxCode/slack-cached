@@ -129,6 +129,20 @@ HTTP requests. Reads `X-RateLimit-Remaining` headers to proactively throttle
 before hitting 429s. Add `--full-threads` to expand threads, and `--json` to get
 per-cycle JSON summaries on stdout. Stops gracefully with `Ctrl+C`.
 
+### Web UI
+
+Browse the cache in a browser with a Slack-like interface:
+
+```bash
+slack-cached serve          # then open http://127.0.0.1:8280
+```
+
+Lists users and channels, renders channel messages and threads with readable
+author names, and offers a `Ctrl+P` palette that full-text searches every
+cached conversation (SQLite FTS5) and jumps straight to the matched message.
+Refresh buttons can trigger live Slack fetches when credentials are
+configured; browsing the cache itself needs none.
+
 ### Users and channels
 
 Cache or refresh every workspace user or visible channel:

@@ -1330,3 +1330,16 @@ def test_poll_handles_channel_error(
     channels = payload["channels"]
     assert any("error" in ch for ch in channels)
     assert any(ch.get("fetched") == 1 for ch in channels)
+
+
+def test_serve_command_is_registered(capsys: pytest.CaptureFixture[str]) -> None:
+    """The serve subcommand appears in --help and accepts --host/--port."""
+    rc = cli.main(["--help"])
+    assert rc == 0
+    assert "serve" in capsys.readouterr().out
+
+    rc = cli.main(["serve", "--help"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "--host" in out
+    assert "--port" in out

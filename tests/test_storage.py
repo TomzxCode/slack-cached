@@ -314,3 +314,121 @@ def test_sql_statements_are_logged(tmp_path: Path) -> None:
     # Each completed query reports its duration in milliseconds.
     assert all(isinstance(e["duration_ms"], float) for e in sql_events)
     assert all(e["duration_ms"] >= 0 for e in sql_events)
+
+
+def _import_search_helpers():
+    from slack_cached.storage import (
+        ensure_search_index,
+        list_channel_summaries,
+        load_channel_thread_roots,
+        search_messages,
+    )
+
+    return ensure_search_index, list_channel_summaries, load_channel_thread_roots, search_messages
+
+
+def test_search_finds_inserted_and_edited_messages(tmp_path: Path) -> None:
+    ensure_search_index, _, _, search_messages = _import_search_helpers()
+    conn = connect(tmp_path / "cache.db")
+    record_thread_refresh(conn, "C1", "1700000000.000100", None)
+    upsert_messages(
+        conn,
+        "C1",
+        "1700000000.000100",
+        [{"ts": "1700000000.000100", "user": "U1", "text": "the deploy failed"}],
+    )
+    conn.commit()
+
+    # Triggers created by connect() index writes immediately.
+    assert ensure_search_index(conn) is True
+    hits = search_messages(conn, "deploy")
+    assert [h.ts for h in hits] == ["1700000000.000100"]
+    assert hits[0].channel == "C1"
+    assert hits[0].thread_ts == "1700000000.000100"
+
+    # Edits flow through the UPDATE trigger.
+    upsert_messages(
+        conn,
+        "C1",
+        "1700000000.000100",
+        [{"ts": "1700000000.000100", "user": "U1", "text": "the rollback finished"}],
+    )
+    conn.commit()
+    assert search_messages(conn, "deploy") == []
+    assert [h.ts for h in search_messages(conn, "rollback")] == ["1700000000.000100"]
+
+
+def test_search_query_syntax_is_defused(tmp_path: Path) -> None:
+    ensure_search_index, _, _, search_messages = _import_search_helpers()
+    conn = connect(tmp_path / "cache.db")
+    # FTS5 operators and column filters must not raise or alter semantics.
+    assert search_messages(conn, 'OR NEAR ("') == []
+    assert search_messages(conn, "   ") == []
+    assert search_messages(conn, '"""') == []
+
+
+def test_search_backfills_rows_written_before_triggers(tmp_path: Path) -> None:
+    ensure_search_index, _, _, search_messages = _import_search_helpers()
+    db = tmp_path / "cache.db"
+    conn = connect(db)
+    record_thread_refresh(conn, "C1", "1700000000.000100", None)
+    upsert_messages(
+        conn,
+        "C1",
+        "1700000000.000100",
+        [{"ts": "1700000000.000100", "user": "U1", "text": "legacy message content"}],
+    )
+    conn.commit()
+    # Simulate a database built before the FTS schema existed.
+    conn.executescript(
+        "DROP TRIGGER messages_fts_insert;"
+        "DROP TRIGGER messages_fts_delete;"
+        "DROP TRIGGER messages_fts_update;"
+        "DROP TABLE messages_fts;"
+        "DELETE FROM meta;"
+    )
+    conn.close()
+
+    conn2 = connect(db)
+    # connect() recreated the (empty) index; not searchable until backfill.
+    assert search_messages(conn2, "legacy") == []
+    assert ensure_search_index(conn2) is True
+    assert len(search_messages(conn2, "legacy")) == 1
+    # Idempotent: a second call neither raises nor duplicates results.
+    assert ensure_search_index(conn2) is True
+    assert len(search_messages(conn2, "legacy")) == 1
+    conn2.close()
+
+
+def test_list_channel_summaries_counts(tmp_path: Path) -> None:
+    _, list_channel_summaries, load_channel_thread_roots, _ = _import_search_helpers()
+    conn = connect(tmp_path / "cache.db")
+    upsert_channels(conn, [{"id": "C1", "name": "general", "is_private": False}])
+    upsert_channels(conn, [{"id": "C2", "name": "random", "is_private": False}])
+    record_thread_refresh(conn, "C1", "1700000000.000100", None)
+    upsert_messages(
+        conn,
+        "C1",
+        "1700000000.000100",
+        [
+            {"ts": "1700000000.000100", "user": "U1", "text": "root"},
+            {"ts": "1700000000.000200", "user": "U1", "text": "reply"},
+        ],
+    )
+    conn.commit()
+
+    summaries = list_channel_summaries(conn)
+    assert [s.id for s in summaries] == ["C1", "C2"]  # sorted by name
+    assert summaries[0].message_count == 2
+    assert summaries[0].thread_count == 1
+    assert summaries[0].latest_ts == 1700000000.0002
+    assert summaries[1].message_count == 0
+    assert summaries[1].latest_ts is None
+
+    roots = load_channel_thread_roots(conn, "C1")
+    assert len(roots) == 1
+    assert roots[0].reply_count == 1
+    assert roots[0].latest_reply_ts == "1700000000.000200"
+    # before-cursor pages backwards.
+    older = load_channel_thread_roots(conn, "C1", before="1700000000.000100")
+    assert older == []

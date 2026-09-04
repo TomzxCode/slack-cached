@@ -34,6 +34,11 @@ Schema:
     fetched_at     REAL    not null    unix epoch seconds of last fetch
     payload        TEXT    not null    full JSON-encoded Slack channel
     PRIMARY KEY (id)
+
+  messages_fts
+    FTS5 virtual table over messages.text (external content), kept in sync by
+    triggers; see SEARCH_SCHEMA and ensure_search_index(). Optional: absent
+    when the SQLite build lacks FTS5.
 """
 
 import json
@@ -89,6 +94,40 @@ CREATE TABLE IF NOT EXISTS channels (
     payload     TEXT NOT NULL,
     PRIMARY KEY (id)
 );
+
+CREATE TABLE IF NOT EXISTS meta (
+    key    TEXT NOT NULL,
+    value  TEXT NOT NULL,
+    PRIMARY KEY (key)
+);
+"""
+
+# Full-text search index over message text, kept in sync with the messages
+# table by triggers. Kept separate from SCHEMA because FTS5 is technically an
+# optional SQLite compile-time feature; a build without it should still be
+# able to cache and browse (search just degrades to no results).
+SEARCH_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    text,
+    content='messages',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+    INSERT INTO messages_fts (rowid, text) VALUES (new.rowid, new.text);
+END;
 """
 
 
@@ -132,6 +171,42 @@ class CachedChannel:
     is_private: bool | None
     fetched_at: float
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ChannelSummary:
+    """A cached channel plus aggregate activity counts for listings."""
+
+    id: str
+    name: str | None
+    is_private: bool | None
+    message_count: int
+    thread_count: int
+    latest_ts: float | None
+
+
+@dataclass(frozen=True)
+class ChannelMessage:
+    """A thread-root message plus aggregate thread info, for channel views."""
+
+    ts: str
+    user: str | None
+    text: str | None
+    payload: dict[str, Any]
+    reply_count: int
+    latest_reply_ts: str | None
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """A message matched by FTS search."""
+
+    channel: str
+    thread_ts: str
+    ts: str
+    user: str | None
+    text: str | None
+    snippet: str | None
 
 
 def _normalize_sql(statement: str) -> str:
@@ -208,6 +283,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _ensure_fts_schema(conn)
 
     log.debug("db_connect_done", db_path=str(db_path))
     return conn
@@ -643,6 +719,176 @@ def count_channel_messages(conn: sqlite3.Connection, channel: str) -> int:
         (channel,),
     ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def count_all_messages(conn: sqlite3.Connection) -> int:
+    """Return the number of cached messages across every channel."""
+    row = conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def count_all_threads(conn: sqlite3.Connection) -> int:
+    """Return the number of cached threads across every channel."""
+    row = conn.execute("SELECT COUNT(*) AS n FROM threads").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def ensure_search_index(conn: sqlite3.Connection) -> bool:
+    """Backfill the FTS search index once, covering rows written before it existed.
+
+    Returns True when full-text search is usable. The index schema and sync
+    triggers are (re)created by connect(), so every writer keeps the index up
+    to date; the rebuild here only handles databases populated by older
+    versions of slackx, tracked via a marker row in the meta table.
+    """
+    present = conn.execute(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'messages_fts'"
+    ).fetchone()["n"]
+    if not present:
+        log.warning("fts5_unavailable")
+        return False
+    marker = conn.execute("SELECT value FROM meta WHERE key = 'fts_backfilled'").fetchone()
+    if marker is None:
+        log.info("fts_rebuild_start")
+        conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_backfilled', '1')")
+        conn.commit()
+        log.info("fts_rebuild_done")
+    return True
+
+
+def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
+    """Create the FTS index and its sync triggers if FTS5 is available.
+
+    Runs on every connect so that every writer (CLI or server) keeps the
+    search index up to date. Degrades to a warning when the SQLite build
+    lacks FTS5.
+    """
+    try:
+        conn.executescript(SEARCH_SCHEMA)
+    except sqlite3.OperationalError as exc:
+        log.warning("fts5_unavailable", error=str(exc))
+
+
+def _fts_query(raw: str) -> str:
+    """Sanitize free text into a safe FTS5 query.
+
+    Each whitespace-separated term is quoted (defusing FTS5 query syntax such
+    as NEAR, OR or column filters) and turned into a prefix match. Terms are
+    implicitly ANDed by FTS5.
+    """
+    terms = []
+    for term in raw.split():
+        cleaned = term.replace('"', " ").strip()
+        if cleaned:
+            terms.append(f'"{cleaned}"*')
+    return " ".join(terms)
+
+
+def search_messages(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[SearchHit]:
+    """Full-text search cached messages, best matches first.
+
+    Returns an empty list when the query has no usable terms or when the FTS5
+    index is unavailable (see ensure_search_index).
+    """
+    fts_query = _fts_query(query)
+    if not fts_query:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT m.channel, m.thread_ts, m.ts, m.user, m.text, "
+            "snippet(messages_fts, 0, '[', ']', '…', 16) AS snippet "
+            "FROM messages_fts f "
+            "JOIN messages m ON m.rowid = f.rowid "
+            "WHERE messages_fts MATCH ? "
+            "ORDER BY rank "
+            "LIMIT ?",
+            (fts_query, limit),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        log.warning("search_failed", query=query, error=str(exc))
+        return []
+    return [
+        SearchHit(
+            channel=row["channel"],
+            thread_ts=row["thread_ts"],
+            ts=row["ts"],
+            user=row["user"],
+            text=row["text"],
+            snippet=row["snippet"],
+        )
+        for row in rows
+    ]
+
+
+def list_channel_summaries(conn: sqlite3.Connection) -> list[ChannelSummary]:
+    """Return every cached channel with message/thread counts and last activity.
+
+    Channels without cached messages still appear, with zero counts.
+    """
+    rows = conn.execute(
+        "SELECT c.id, c.name, c.is_private, "
+        "COUNT(m.ts) AS message_count, "
+        "COUNT(DISTINCT m.thread_ts) AS thread_count, "
+        "MAX(CAST(m.ts AS REAL)) AS latest "
+        "FROM channels c LEFT JOIN messages m ON m.channel = c.id "
+        "GROUP BY c.id, c.name, c.is_private "
+        "ORDER BY c.name COLLATE NOCASE ASC, c.id ASC"
+    ).fetchall()
+    return [
+        ChannelSummary(
+            id=row["id"],
+            name=row["name"],
+            is_private=None if row["is_private"] is None else bool(row["is_private"]),
+            message_count=row["message_count"],
+            thread_count=row["thread_count"],
+            latest_ts=row["latest"],
+        )
+        for row in rows
+    ]
+
+
+def load_channel_thread_roots(
+    conn: sqlite3.Connection,
+    channel: str,
+    before: str | None = None,
+    limit: int = 200,
+) -> list[ChannelMessage]:
+    """Return cached thread-root messages for a channel, newest first.
+
+    Each result carries the number of stored replies and the ts of the latest
+    reply. ``before`` (a message ts) pages backwards in time.
+    """
+    sql = (
+        "SELECT m.ts, m.user, m.text, m.payload, "
+        "(SELECT COUNT(*) FROM messages r "
+        " WHERE r.channel = m.channel AND r.thread_ts = m.thread_ts "
+        " AND r.ts != m.ts) AS reply_count, "
+        "(SELECT r.ts FROM messages r "
+        " WHERE r.channel = m.channel AND r.thread_ts = m.thread_ts "
+        " AND r.ts != m.ts "
+        " ORDER BY CAST(r.ts AS REAL) DESC LIMIT 1) AS latest_reply_ts "
+        "FROM messages m "
+        "WHERE m.channel = ? AND m.ts = m.thread_ts"
+    )
+    params: list[Any] = [channel]
+    if before is not None:
+        sql += " AND CAST(m.ts AS REAL) < CAST(? AS REAL)"
+        params.append(before)
+    sql += " ORDER BY CAST(m.ts AS REAL) DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        ChannelMessage(
+            ts=row["ts"],
+            user=row["user"],
+            text=row["text"],
+            payload=json.loads(row["payload"]),
+            reply_count=row["reply_count"],
+            latest_reply_ts=row["latest_reply_ts"],
+        )
+        for row in rows
+    ]
 
 
 def _bool_to_int(value: Any) -> int | None:

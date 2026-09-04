@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>slack-cached</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%97%AF%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+  <div id="app" v-cloak>
+
+    <div class="flex h-screen" @click="onMainClick">
+
+      <!-- ============================================================ sidebar -->
+      <aside class="flex w-72 flex-none flex-col overflow-hidden bg-base-300">
+        <div class="flex items-center gap-2 border-b border-base-content/10 px-4 py-3">
+          <h1 class="text-lg font-black text-base-content">slack-cached</h1>
+          <div class="dropdown dropdown-end ml-auto">
+            <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1.5 text-xs font-normal"
+                 title="Choose theme">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4"
+                   fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round">
+                <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
+                <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
+                <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
+                <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>
+              </svg>
+              <span class="capitalize">{{ theme }}</span>
+            </div>
+            <ul tabindex="0" class="dropdown-content menu z-[150] mt-1 w-52 flex-col flex-nowrap rounded-box bg-base-200 p-2 text-sm shadow-xl max-h-80 overflow-y-auto">
+              <li v-for="t in themes" :key="t">
+                <a :class="{'menu-active': t === theme}" @click.stop="chooseTheme(t, $event)">
+                  <span class="inline-block h-4 w-4 flex-none rounded-full border"
+                        :data-theme="t"
+                        style="border-color: color-mix(in oklab, currentColor 25%, transparent)">
+                    <span class="inline-block h-full w-full rounded-full"
+                          :style="{background: 'color-mix(in oklab, var(--color-primary) 65%, var(--color-base-100))'}"></span>
+                  </span>
+                  <span class="capitalize">{{ t }}</span>
+                </a>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <button class="btn btn-sm mx-3 mt-3 justify-between border border-base-content/10 font-normal opacity-70"
+                @click.stop="openPalette">
+          <span>Jump to a channel or conversation…</span>
+          <kbd class="kbd kbd-sm">Ctrl P</kbd>
+        </button>
+
+        <div class="flex-1 overflow-y-auto pb-6">
+          <section>
+            <div class="flex items-center justify-between px-4 pb-0.5 pt-4">
+              <h2 class="text-xs font-bold uppercase tracking-wide opacity-60">Channels</h2>
+              <button class="btn btn-ghost btn-xs" :disabled="!!refreshing"
+                      title="Refresh channels from Slack" @click.stop="refreshChannels">
+                <span v-if="refreshing === 'Channel refresh'" class="loading loading-spinner loading-xs"></span>
+                <span v-else>&#x27F3;</span>
+              </button>
+            </div>
+            <ul class="menu w-full px-2 p-0 text-sm">
+              <li v-for="c in channels" :key="c.id">
+                <a class="side-item" :class="{'menu-active': c.id === channelId}" @click.stop="openChannel(c.id)">
+                  <span class="flex-1 truncate">
+                    <span v-if="c.is_private" class="opacity-70">&#128274;</span><span v-else>#</span>{{ c.name || c.id }}
+                  </span>
+                  <span class="badge badge-ghost badge-sm" v-if="c.message_count">{{ c.message_count }}</span>
+                  <span class="text-[11px] opacity-50" v-if="c.latest_ts">{{ fmtRelative(c.latest_ts) }}</span>
+                </a>
+              </li>
+            </ul>
+            <div v-if="booted && !channels.length" class="px-4 py-3 text-xs opacity-50">
+              No channels cached yet.<br>
+              Use the &#x27F3; button above to fetch them from Slack.
+            </div>
+          </section>
+
+          <section>
+            <div class="flex items-center justify-between px-4 pb-0.5 pt-4">
+              <h2 class="text-xs font-bold uppercase tracking-wide opacity-60">People</h2>
+              <button class="btn btn-ghost btn-xs" :disabled="!!refreshing"
+                      title="Refresh users from Slack" @click.stop="refreshUsers">
+                <span v-if="refreshing === 'User refresh'" class="loading loading-spinner loading-xs"></span>
+                <span v-else>&#x27F3;</span>
+              </button>
+            </div>
+            <ul class="menu w-full px-2 p-0 text-sm">
+              <li v-for="u in users" :key="u.id">
+                <a class="side-item" :class="{'menu-active': profile && profile.id === u.id}" @click.stop="showProfile(u)">
+                  <div class="avatar placeholder">
+                    <div class="w-6 rounded" :style="avatarStyle(u.id)">
+                      <span class="text-[10px] font-bold uppercase">{{ initials(u.display_name) }}</span>
+                    </div>
+                  </div>
+                  <span class="flex-1 truncate">{{ u.display_name }}</span>
+                  <span class="text-[11px] opacity-50" v-if="u.is_bot">bot</span>
+                </a>
+              </li>
+            </ul>
+            <div v-if="booted && !users.length" class="px-4 py-3 text-xs opacity-50">
+              No users cached yet.<br>
+              Use the &#x27F3; button above to fetch them from Slack.
+            </div>
+          </section>
+        </div>
+
+        <div class="flex items-center gap-3 border-t border-base-content/10 px-4 py-1.5 text-[11px] opacity-60">
+          <span v-if="summary">{{ summary.channels }} channels &middot; {{ summary.messages }} messages</span>
+          <span class="ml-auto"><kbd class="kbd kbd-xs">Ctrl P</kbd> to jump</span>
+        </div>
+      </aside>
+
+      <!-- ============================================================ channel -->
+      <main class="relative flex flex-1 flex-col overflow-hidden" v-if="view === 'channel' && channel">
+        <header class="flex min-h-12 items-center gap-2.5 border-b border-base-content/10 px-5 py-2.5">
+          <span class="channel-title text-base font-black text-base-content">
+            <span v-if="channel.is_private">&#128274;</span>#{{ channel.name || channel.id }}
+          </span>
+          <span class="badge badge-ghost badge-sm font-mono">{{ channel.id }}</span>
+          <span class="flex-1"></span>
+          <button class="btn btn-sm" :disabled="!!refreshing" @click.stop="refreshChannel">
+            <span v-if="refreshing === 'Channel refresh'" class="loading loading-spinner loading-xs"></span>
+            Refresh from Slack
+          </button>
+        </header>
+
+        <div class="flex-1 overflow-y-auto py-3" ref="msgScroll">
+          <div class="text-center" v-if="hasMore">
+            <button class="btn btn-xs btn-outline" :disabled="loadingOlder" @click.stop="loadOlder">
+              <span v-if="loadingOlder" class="loading loading-spinner loading-xs"></span>
+              {{ loadingOlder ? 'Loading…' : 'Load older messages' }}
+            </button>
+          </div>
+
+          <div v-if="loadingMessages" class="px-5 py-2.5 text-sm opacity-60">Loading messages…</div>
+
+          <div v-else-if="!messages.length" class="py-16 text-center opacity-70">
+            <h3 class="font-bold text-base-content">No cached messages in this channel</h3>
+            <p class="text-sm">Use "Refresh from Slack" to fetch them (credentials required).</p>
+          </div>
+
+          <template v-for="group in messageGroups" :key="group.label">
+            <div class="divider my-2 text-xs font-bold opacity-60">{{ group.label }}</div>
+            <message-row v-for="m in group.messages" :key="m.ts"
+                         :msg="m" :ctx="msgCtx()" :highlight="highlightTs === m.ts"
+                         :show-thread-bar="true"
+                         @open-thread="openRootThread"></message-row>
+          </template>
+        </div>
+
+        <aside class="thread-panel absolute inset-y-0 right-0 z-30 flex w-[560px] max-w-[55%] flex-col bg-base-100 shadow-2xl border-l border-base-content/10"
+               v-if="thread">
+          <header class="flex items-center gap-2 border-b border-base-content/10 px-4 py-3 font-black text-base-content">
+            <span>Thread <span class="font-normal opacity-60">in #{{ channel.name || channel.id }}</span></span>
+            <span class="flex-1"></span>
+            <button class="btn btn-ghost btn-xs" :disabled="!!refreshing"
+                    title="Refresh thread from Slack" @click.stop="refreshThread">
+              <span v-if="refreshing === 'Thread refresh'" class="loading loading-spinner loading-xs"></span>
+              <span v-else>&#x27F3;</span>
+            </button>
+            <button class="btn btn-ghost btn-xs" title="Close" @click.stop="closeThread">&#10005;</button>
+          </header>
+          <div class="flex-1 overflow-y-auto py-2.5" ref="threadScroll">
+            <div v-if="thread.loading" class="px-5 py-2.5 text-sm opacity-60">Loading thread…</div>
+            <template v-else v-for="group in threadGroups" :key="group.label">
+              <div class="divider my-2 text-xs font-bold opacity-60">{{ group.label }}</div>
+              <message-row v-for="m in group.messages" :key="m.ts"
+                           :msg="m" :ctx="msgCtx()"
+                           :highlight="highlightTs === m.ts"
+                           :class="{'root-msg': m.ts === thread.thread_ts}"
+                           :show-thread-bar="false"></message-row>
+            </template>
+          </div>
+          <div class="px-5 pb-2 text-xs opacity-50" v-if="thread.messages.length">
+            {{ thread.messages.length - 1 }} replies
+          </div>
+        </aside>
+      </main>
+
+      <!-- ============================================================ home -->
+      <main class="flex flex-1 flex-col overflow-hidden" v-else>
+        <div class="mx-auto w-full max-w-3xl p-10">
+          <h2 class="text-2xl font-black text-base-content">Workspace cache</h2>
+          <p class="mt-1 text-sm opacity-70">
+            Press <kbd class="kbd kbd-sm">Ctrl P</kbd> to jump between channels and conversations,
+            or pick a channel from the sidebar.
+          </p>
+
+          <div class="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4" v-if="summary">
+            <div class="card bg-base-200 border border-base-content/10">
+              <div class="card-body p-4">
+                <div class="text-2xl font-black text-base-content">{{ summary.channels }}</div>
+                <div class="text-[11px] uppercase tracking-wide opacity-60">Channels</div>
+              </div>
+            </div>
+            <div class="card bg-base-200 border border-base-content/10">
+              <div class="card-body p-4">
+                <div class="text-2xl font-black text-base-content">{{ summary.users }}</div>
+                <div class="text-[11px] uppercase tracking-wide opacity-60">People</div>
+              </div>
+            </div>
+            <div class="card bg-base-200 border border-base-content/10">
+              <div class="card-body p-4">
+                <div class="text-2xl font-black text-base-content">{{ summary.messages }}</div>
+                <div class="text-[11px] uppercase tracking-wide opacity-60">Messages</div>
+              </div>
+            </div>
+            <div class="card bg-base-200 border border-base-content/10">
+              <div class="card-body p-4">
+                <div class="text-2xl font-black text-base-content">{{ summary.threads }}</div>
+                <div class="text-[11px] uppercase tracking-wide opacity-60">Threads</div>
+              </div>
+            </div>
+          </div>
+
+          <template v-if="recentChannels.length">
+            <h3 class="mt-6 font-bold text-base-content">Recently active</h3>
+            <ul class="menu w-full p-0">
+              <li v-for="c in recentChannels" :key="c.id">
+                <a @click.stop="openChannel(c.id)" class="justify-between">
+                  <span><span v-if="c.is_private" class="opacity-70">&#128274;</span>#{{ c.name || c.id }}</span>
+                  <span class="text-xs opacity-50">
+                    {{ c.message_count }} {{ c.message_count === 1 ? 'message' : 'messages' }}
+                    &middot; active {{ fmtRelative(c.latest_ts) }} ago
+                  </span>
+                </a>
+              </li>
+            </ul>
+          </template>
+
+          <p class="mt-6 break-all font-mono text-xs opacity-50" v-if="summary">{{ summary.db_path }}</p>
+        </div>
+      </main>
+    </div>
+
+    <!-- ============================================================ palette -->
+    <div class="palette-modal modal modal-open" v-if="paletteOpen">
+      <div class="modal-box max-w-2xl overflow-hidden p-0" @click.stop>
+        <input ref="paletteInput" v-model="paletteQuery"
+               @input="onPaletteInput" @keydown="onPaletteKey"
+               placeholder="Search channels, people and conversations…"
+               spellcheck="false" autocomplete="off"
+               class="input w-full rounded-none border-x-0 border-t-0 border-base-content/10 text-base focus:outline-none">
+        <div class="max-h-[46vh] overflow-y-auto py-1.5" ref="paletteResults">
+          <template v-for="(item, i) in paletteItems" :key="item.key">
+            <div class="palette-group px-4 pb-0.5 pt-2.5 text-[11px] font-bold uppercase tracking-wide opacity-50"
+                 v-if="i === 0 || paletteItems[i - 1].type !== item.type">
+              {{ groupTitle(item.type) }}
+            </div>
+            <button class="palette-item flex w-full items-center gap-2.5 px-4 py-1.5 text-left"
+                    :class="{'active': i === paletteActive}"
+                    @click.stop="chooseItem(item)" @mousemove="paletteActive = i">
+              <span v-if="item.type === 'channel'" class="w-5 flex-none text-center opacity-70">
+                {{ item.is_private ? '&#128274;' : '#' }}
+              </span>
+              <span v-else-if="item.type === 'person'" class="avatar placeholder flex-none">
+                <div class="w-6 rounded" :style="avatarStyle(item.user.id)">
+                  <span class="text-[10px] font-bold uppercase">{{ initials(item.user.display_name) }}</span>
+                </div>
+              </span>
+              <span v-else class="w-5 flex-none text-center opacity-70">&#128172;</span>
+
+              <span class="min-w-0 flex-1 truncate">
+                <template v-if="item.type === 'channel'">{{ item.name }}</template>
+                <template v-else-if="item.type === 'person'">
+                  {{ item.user.display_name }}
+                  <span class="text-xs opacity-50" v-if="item.user.name">@{{ item.user.name }}</span>
+                </template>
+                <template v-else>
+                  <span v-html="markedSnippet(item.hit)"></span>
+                </template>
+              </span>
+
+              <span class="flex-none text-xs opacity-50" v-if="item.type === 'channel'">
+                {{ item.message_count }} {{ item.message_count === 1 ? 'message' : 'messages' }}
+              </span>
+              <span class="flex-none text-xs opacity-50" v-else-if="item.type === 'message'">
+                #{{ item.hit.channel_name || item.hit.channel }}
+              </span>
+            </button>
+          </template>
+          <div class="p-4 text-center text-sm opacity-50"
+               v-if="!paletteItems.length && !paletteMsgsLoading">
+            {{ paletteQuery.trim().length >= 2 ? 'No matches found.' : 'Type to search channels, people and messages.' }}
+          </div>
+        </div>
+        <div class="flex items-center gap-4 border-t border-base-content/10 px-4 py-2 text-[11px] opacity-60">
+          <span><kbd class="kbd kbd-xs">&uarr;&darr;</kbd> navigate</span>
+          <span><kbd class="kbd kbd-xs">&#8629;</kbd> open</span>
+          <span><kbd class="kbd kbd-xs">esc</kbd> close</span>
+          <span class="ml-auto" v-if="paletteMsgsLoading">searching messages…</span>
+        </div>
+      </div>
+      <div class="modal-backdrop" @click="closePalette"></div>
+    </div>
+
+    <!-- ============================================================ profile -->
+    <div class="profile-pop card fixed right-6 top-[70px] z-[90] w-80 border border-base-content/10 bg-base-200 shadow-xl"
+         v-if="profile" @click.stop>
+      <div class="card-body gap-3 p-4">
+        <div class="flex items-center gap-3">
+          <div class="avatar placeholder">
+            <div class="w-12 rounded-lg" :style="avatarStyle(profile.id)">
+              <span class="text-sm font-bold uppercase">{{ initials(profile.display_name) }}</span>
+            </div>
+          </div>
+          <div class="min-w-0">
+            <div class="truncate font-black text-base-content">{{ profile.real_name || profile.display_name }}</div>
+            <div class="text-sm text-primary" v-if="profile.name">@{{ profile.name }}</div>
+          </div>
+        </div>
+        <div class="text-sm">
+          <div class="opacity-50">User id</div>
+          <div class="break-all">{{ profile.id }}</div>
+          <template v-if="profile.title">
+            <div class="mt-2 opacity-50">Title</div><div>{{ profile.title }}</div>
+          </template>
+          <template v-if="profile.tz">
+            <div class="mt-2 opacity-50">Timezone</div><div>{{ profile.tz }}</div>
+          </template>
+        </div>
+        <button class="btn btn-sm mt-1" @click.stop="closeProfile">Close</button>
+      </div>
+    </div>
+
+    <!-- ============================================================ toasts -->
+    <div class="toast toast-center z-[200]">
+      <div v-for="t in toasts" :key="t.id" class="alert max-w-xl shadow-lg"
+           :class="t.kind === 'error' ? 'alert-error' : t.kind === 'ok' ? 'alert-success' : 'alert-info'">
+        <span>{{ t.text }}</span>
+      </div>
+    </div>
+  </div>
+
+  <noscript>This UI requires JavaScript.</noscript>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+  <script>
+    // Shown when the Vue CDN cannot be reached (e.g. offline).
+    window.addEventListener('DOMContentLoaded', function () {
+      if (!window.Vue) {
+        document.getElementById('app').innerHTML =
+          '<div style="color:#d1d2d3;font-family:sans-serif;padding:2em">' +
+          'Failed to load Vue from the CDN. This UI needs internet access on ' +
+          'first load, or serve vue.global.prod.js yourself next to app.js.</div>';
+      }
+    });
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
