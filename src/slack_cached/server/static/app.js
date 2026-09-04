@@ -232,11 +232,14 @@
   function routeUrl(route) {
     if (!route || !route.channelId) return '/';
     var path = '/archives/' + encodeURIComponent(route.channelId);
+    // The path points at the specific message when one is given; the thread
+    // root only fills the path when no message ts is known (bare thread view).
+    var pathTs = route.messageTs || route.threadTs;
+    if (pathTs) {
+      path += '/' + tsToPts(pathTs);
+    }
     if (route.threadTs) {
-      path += '/' + tsToPts(route.threadTs) +
-        '?thread_ts=' + encodeURIComponent(route.threadTs);
-    } else if (route.messageTs) {
-      path += '/' + tsToPts(route.messageTs);
+      path += '?thread_ts=' + encodeURIComponent(route.threadTs);
     }
     return path;
   }
@@ -910,10 +913,11 @@
       avatar: function () {
         return (this.ctx.userAvatars && this.ctx.userAvatars[this.msg.user]) || '';
       },
-      // Route target for this message. Inside an open thread every message
-      // links to the thread permalink (root included), so opening the URL on
-      // page load restores the thread panel; elsewhere a message links to
-      // itself only.
+      // Route target for this message. Inside an open thread each message
+      // links to itself (path ts) with the thread root in thread_ts, so
+      // opening the URL on page load restores the thread panel and
+      // highlights the linked message; elsewhere a message links to itself
+      // only.
       linkTarget: function () {
         return {
           channelId: this.ctx.channelId || '',
