@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,6 +9,19 @@
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%97%AF%3C/text%3E%3C/svg%3E">
+  <script>
+    // Apply the stored theme (or the OS preference) before first paint.
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('slackx-theme'); } catch (e) { /* ignore */ }
+      if (t !== 'light' && t !== 'dark') {
+        var dark = window.matchMedia &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches;
+        t = dark ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 <body>
   <div id="app" v-cloak>
@@ -36,7 +49,10 @@
             <ul tabindex="0" class="dropdown-content menu z-[150] mt-1 w-52 flex-col flex-nowrap rounded-box bg-base-200 p-2 text-sm shadow-xl max-h-80 overflow-y-auto">
               <li v-for="t in themes" :key="t">
                 <a :class="{'menu-active': t === theme}" @click.stop="chooseTheme(t, $event)">
-                  <span class="inline-block h-4 w-4 flex-none rounded-full border"
+                  <span v-if="t === 'system'" class="inline-block h-4 w-4 flex-none rounded-full border"
+                        style="border-color: color-mix(in oklab, currentColor 25%, transparent);
+                               background: linear-gradient(90deg, #eceef2 50%, #19171d 50%)"></span>
+                  <span v-else class="inline-block h-4 w-4 flex-none rounded-full border"
                         :data-theme="t"
                         style="border-color: color-mix(in oklab, currentColor 25%, transparent)">
                     <span class="inline-block h-full w-full rounded-full"

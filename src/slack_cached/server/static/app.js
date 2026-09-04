@@ -177,8 +177,9 @@
   }
 
   // Themes shipped by the daisyUI CDN stylesheet (themes.css), in menu order.
+  // "System" resolves to light/dark via prefers-color-scheme.
   var THEMES = [
-    'light', 'dark',
+    'system', 'light', 'dark',
     'cupcake', 'bumblebee', 'emerald', 'corporate',
     'synthwave', 'retro', 'cyberpunk', 'valentine',
     'halloween', 'garden', 'forest', 'aqua',
@@ -619,9 +620,19 @@
 
       // -------------------------------------------------- theme
 
+      applyTheme: function () {
+        // Resolve the active data-theme; "System" follows the OS setting.
+        var theme = this.theme;
+        if (theme === 'system') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      },
+
       setTheme: function (theme) {
         this.theme = theme;
-        document.documentElement.setAttribute('data-theme', theme);
+        this.applyTheme();
         try {
           localStorage.setItem('slackx-theme', theme);
         } catch (e) { /* private mode etc.; theme still applies for the session */ }
@@ -657,16 +668,37 @@
 
     mounted: function () {
       document.addEventListener('keydown', this.globalKey);
+      // Follow OS light/dark changes while "System" is selected.
+      if (window.matchMedia) {
+        var mq = window.matchMedia('(prefers-color-scheme: dark)');
+        var self = this;
+        this._onSystemThemeChange = function () {
+          if (self.theme === 'system') self.applyTheme();
+        };
+        if (mq.addEventListener) {
+          mq.addEventListener('change', this._onSystemThemeChange);
+        } else if (mq.addListener) {
+          mq.addListener(this._onSystemThemeChange); // older browsers
+        }
+      }
       var stored = null;
       try {
         stored = localStorage.getItem('slackx-theme');
       } catch (e) { /* ignore */ }
-      this.setTheme(THEMES.indexOf(stored) !== -1 ? stored : 'dark');
+      this.setTheme(THEMES.indexOf(stored) !== -1 ? stored : 'system');
       this.boot();
     },
 
     beforeUnmount: function () {
       document.removeEventListener('keydown', this.globalKey);
+      if (window.matchMedia) {
+        var mq = window.matchMedia('(prefers-color-scheme: dark)');
+        if (mq.removeEventListener) {
+          mq.removeEventListener('change', this._onSystemThemeChange);
+        } else if (mq.removeListener) {
+          mq.removeListener(this._onSystemThemeChange);
+        }
+      }
     },
   });
 

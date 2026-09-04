@@ -32,10 +32,11 @@ The interface mimics Slack's layout over the cached database:
 
 ## Themes
 
-The palette icon in the sidebar header opens a theme menu with every
-[daisyUI](https://daisyui.com) theme (light, dark, cupcake, dracula, nord,
-solarized-style and friends). The choice is remembered per browser via
-localStorage; the UI defaults to dark.
+The palette icon in the sidebar header opens a theme menu with a **System**
+option (follows the OS light/dark setting, updating live when it changes)
+plus every [daisyUI](https://daisyui.com) theme (light, dark, cupcake,
+dracula, nord and friends). The choice is remembered per browser via
+localStorage; the UI defaults to System.
 
 ## Jumping with Ctrl+P
 
